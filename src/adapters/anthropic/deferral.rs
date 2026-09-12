@@ -20,7 +20,75 @@ pub(super) fn strip_unsupported_deferral(body: &mut RequestBody, upstream_model:
     if !request_needs_strip(body.json()) {
         return;
     }
-    body.mutate(strip_deferral_fields);
+    body.mutate(|request| {
+        let revealed = reveal_client_tools(request);
+        strip_deferral_fields(request) || revealed
+    });
+}
+
+/// Unsupported Anthropic hosts need the same progressive reveal as Responses.
+/// Claude remains the search executor; only referenced or already-called tools
+/// become callable. Never send the entire deferred catalog to the backend.
+fn reveal_client_tools(request: &mut Value) -> bool {
+    let has_client_search = request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("name").and_then(Value::as_str) == Some("ToolSearch"))
+        });
+    // Without a client search executor, retaining callable tools is necessary.
+    if !has_client_search {
+        return false;
+    }
+    let mut loaded = std::collections::HashSet::new();
+    let mut changed = false;
+    if let Some(name) = request.pointer("/tool_choice/name").and_then(Value::as_str) {
+        loaded.insert(name.to_owned());
+    }
+    if let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for block in blocks {
+                if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                    if let Some(name) = block.get("name").and_then(Value::as_str) {
+                        loaded.insert(name.to_owned());
+                    }
+                }
+                if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                let Some(content) = block.get_mut("content").and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                for entry in content {
+                    if entry.get("type").and_then(Value::as_str) != Some("tool_reference") {
+                        continue;
+                    }
+                    if let Some(name) = entry.get("tool_name").and_then(Value::as_str) {
+                        loaded.insert(name.to_owned());
+                        *entry = serde_json::json!({"type":"text","text":format!("Tool available: {name}")});
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) {
+        let before = tools.len();
+        tools.retain(|tool| {
+            tool.get("defer_loading").and_then(Value::as_bool) != Some(true)
+                || tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| loaded.contains(name))
+        });
+        changed |= tools.len() != before;
+    }
+    changed
 }
 
 fn is_anthropic_model(upstream_model: &str) -> bool {
@@ -408,5 +476,34 @@ mod tests {
         assert_eq!(out["tools"].as_array().unwrap().len(), 1);
         assert!(out["tools"][0].get("defer_loading").is_none());
         assert_eq!(out["tool_choice"]["name"], "tool_search_tool_lookalike");
+    }
+    #[test]
+    fn custom_hosts_reveal_only_referenced_tools_from_large_catalog() {
+        let mut tools =
+            vec![serde_json::json!({"name":"ToolSearch","input_schema":{"type":"object"}})];
+        for n in 0..1089 {
+            tools.push(serde_json::json!({"name":format!("fixture_{n}"),"defer_loading":true,"input_schema":{"type":"object"}}));
+        }
+        let input = serde_json::json!({"model":"cf-glm-5.3","tools":tools,"messages":[{"role":"user","content":"hello"}]});
+        let raw = serde_json::to_vec(&input).unwrap();
+        let first: Value =
+            serde_json::from_slice(&apply(&raw, "cloudflare/@cf/zai-org/glm-5.3")).unwrap();
+        assert_eq!(first["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(apply(&raw, "claude-opus-5"), raw);
+        let mut revealed = input;
+        revealed["messages"] = serde_json::json!([{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":"fixture_42"},{"type":"text","text":"untouched"}]}]}]);
+        let next: Value =
+            serde_json::from_slice(&apply(&serde_json::to_vec(&revealed).unwrap(), "k3")).unwrap();
+        assert_eq!(next["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(next["tools"][1]["name"], "fixture_42");
+        assert!(next["tools"][1].get("defer_loading").is_none());
+        assert_eq!(
+            next["messages"][0]["content"][0]["content"][0]["type"],
+            "text"
+        );
+        assert_eq!(
+            next["messages"][0]["content"][0]["content"][1]["text"],
+            "untouched"
+        );
     }
 }

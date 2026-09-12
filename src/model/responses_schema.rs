@@ -20,9 +20,11 @@
 //! so the offending patterns are dropped here rather than forwarded. Outside
 //! strict mode a `pattern` is advisory — the model reads it, nothing enforces
 //! it — so a dropped one costs a hint, not a capability; the `description`
-//! usually restates the constraint anyway. Patterns Python accepts (lookahead
-//! included) are kept, except `\N{…}`: Python reads it as a named character and
-//! JavaScript as a literal `N`, so the two never agree on what it matches.
+//! may restate the constraint. ChatGPT also rejects lookaround even when Python
+//! accepts it. We additionally require compilation with regex-lite as a
+//! conservative compatibility filter; it is not an exact implementation of any
+//! provider's validator. Unsupported or complex patterns may lose their hint.
+//! The tool's own input validation remains responsible for enforcing constraints.
 
 use serde_json::Value;
 
@@ -30,7 +32,7 @@ use serde_json::Value;
 const MAXREPEAT: u64 = 4_294_967_295;
 
 /// Remove every `pattern` keyword, and every `patternProperties` entry, whose
-/// regex Python's `re` would refuse to compile.
+/// regex fails either our Python compatibility check or regex-lite compilation.
 ///
 /// Walks the applicator keywords and nothing else, mirroring where the
 /// validator itself looks: the meta-schema recognizes a subschema only under
@@ -46,7 +48,7 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
             if map
                 .get("pattern")
                 .and_then(Value::as_str)
-                .is_some_and(|pattern| !python_re_accepts(pattern))
+                .is_some_and(|pattern| !upstream_re_accepts(pattern))
             {
                 map.remove("pattern");
             }
@@ -56,7 +58,7 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
                     // keys, then recurse into what survived.
                     "patternProperties" => {
                         if let Value::Object(entries) = child {
-                            entries.retain(|key, _| python_re_accepts(key));
+                            entries.retain(|key, _| upstream_re_accepts(key));
                             entries.values_mut().for_each(strip_unsupported_patterns);
                         }
                     }
@@ -121,6 +123,12 @@ pub(crate) fn strip_unsupported_patterns(value: &mut Value) {
 /// the non-octal digits `\8` and `\9` — and a range endpoint may not be a
 /// category escape (`[\w-.]` is `bad character range`). A braced quantifier's
 /// bounds must stay below `MAXREPEAT`.
+fn upstream_re_accepts(pattern: &str) -> bool {
+    // An additional conservative parser rejects lookaround, backreferences,
+    // and malformed syntax missed by the historical Python approximation.
+    python_re_accepts(pattern) && regex_lite::Regex::new(pattern).is_ok()
+}
+
 fn python_re_accepts(pattern: &str) -> bool {
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
@@ -552,7 +560,7 @@ mod tests {
                 "type": "object",
                 "properties": {
                     "field": {"type": "string"},
-                    "collection": {"type": "string", "pattern": ARTIFACT_COLLECTION},
+                    "collection": {"type": "string"},
                     "writes": {"type": "array", "items": {"type": "string"}},
                     "either": {"anyOf": [{}, {"pattern": "^ok$"}]},
                     "keyed": {"patternProperties": {"^[a-z]+$": {}}}
@@ -622,5 +630,18 @@ mod tests {
         let expected = schema.clone();
         strip_unsupported_patterns(&mut schema);
         assert_eq!(schema, expected);
+    }
+    #[test]
+    fn responses_rejects_lookaround_but_preserves_literals_and_simple_patterns() {
+        for pattern in [r"^(?!.*\.\.)[^@]+@[^@]+$", r"(?<=a)b", r"(?<!a)b", r"(a)\1"] {
+            let mut schema = json!({"properties":{"email":{"type":"string","pattern":pattern}},"default":{"pattern":pattern}});
+            strip_unsupported_patterns(&mut schema);
+            assert!(schema["properties"]["email"].get("pattern").is_none());
+            assert_eq!(schema["default"]["pattern"], pattern);
+        }
+        let mut schema = json!({"properties":{"pattern":{"type":"string","pattern":"^[a-z]+$"}}});
+        let original = schema.clone();
+        strip_unsupported_patterns(&mut schema);
+        assert_eq!(schema, original);
     }
 }

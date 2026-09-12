@@ -557,6 +557,7 @@ fn loadable_tool_spec(name: &str, context: &ToolSearchContext) -> Option<Value> 
         "name": name,
         "description": description,
         "defer_loading": true,
+        "strict": false,
         "parameters": normalize_schema((*input_schema).clone()),
     }))
 }
@@ -773,13 +774,18 @@ fn web_search_tool(tool: &Value) -> Value {
     out
 }
 
-fn function_tool(tool: &Value) -> Value {
-    json!({
+fn function_tool(tool: &Value, flavor: ResponsesFlavor) -> Value {
+    let mut out = json!({
         "type": "function",
         "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
         "description": tool.get("description").and_then(Value::as_str).unwrap_or(""),
         "parameters": normalize_schema(tool.get("input_schema").cloned().unwrap_or_else(|| json!({})))
-    })
+    });
+    // Keep optional Claude tool arguments optional on the Codex backend.
+    if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
+        out["strict"] = json!(false);
+    }
+    out
 }
 
 /// Claude Code's ToolSearch tool definition -> the Responses native
@@ -827,7 +833,7 @@ fn tools(request: &Value, flavor: ResponsesFlavor, context: &ToolSearchContext) 
                         _ => Some(web_search_tool(tool)),
                     }
                 } else {
-                    Some(function_tool(tool))
+                    Some(function_tool(tool, flavor))
                 }
             })
             .collect(),

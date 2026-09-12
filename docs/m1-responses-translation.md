@@ -72,12 +72,16 @@ regenerate it.
   meta-schema with `format: regex` checked by Python, and one JavaScript-only regex
   (`\p{Cc}`, `(?<name>…)`, `\u{…}`, `\z`) fails the whole request with
   `Invalid schema for function '…': '…' is not a 'regex'`. Claude Code's `Artifact` tool
-  ships such a pattern. Lookaheads and everything else Python accepts are kept, the one deliberate
-  exception being `\N{…}`, which names a character in Python but is a literal `N` in
-  JavaScript — the engines disagree on its meaning, so it is dropped rather than
-  forwarded. Outside strict
-  mode a dropped `pattern` is an advisory hint lost, not a capability
-  (`src/model/responses_schema.rs`).
+  ships such a pattern. Better Shunt also requires compilation with `regex-lite`,
+  rejecting lookaround (including Neon's email pattern), backreferences and malformed
+  expressions missed by the Python approximation. This is a conservative filter, not
+  a complete emulation of provider validators. Ordinary patterns and schema data such
+  as defaults remain intact; tool-side validation still enforces constraints.
+  The inbound Responses-to-Chat translator uses the same filter (#489).
+  OpenAI/ChatGPT function tools explicitly use `strict:false` so optional arguments
+  stay optional; xAI/Grok keep their existing strict-field behavior. Both eager and
+  native ToolSearch-loaded schemas use this policy. Empty arrays and null argument
+  values are never deleted globally (#450).
 - **tool_choice map:** `auto→"auto"`, `none→"none"`, `any→"required"`,
   `tool{name}→{type:"function",name}`. If absent but tools present → `"auto"`; if no tools →
   omit.

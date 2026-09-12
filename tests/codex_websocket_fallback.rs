@@ -38,6 +38,38 @@ use wiremock::{
 /// credential.
 static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
+// Keep every test in this binary away from the real account store (#493).
+// The existing ENV_LOCK serializes construction, use, and restoration.
+struct IsolatedAccounts {
+    path: PathBuf,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl IsolatedAccounts {
+    fn new() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("shunt-ws-accounts-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let prior = std::env::var_os("SHUNT_CODEX_ACCOUNTS_DIR");
+        std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &path);
+        Self { path, prior }
+    }
+}
+
+impl Drop for IsolatedAccounts {
+    fn drop(&mut self) {
+        match &self.prior {
+            Some(value) => std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", value),
+            None => std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR"),
+        }
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 struct TestGateway {
     base_url: String,
     /// The router's state, so a test can inspect the account pool a turn fed.
@@ -221,6 +253,7 @@ async fn websocket_handshake_failure_falls_back_to_http() {
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     // Upstream speaks only HTTP: it serves the Responses POST but has no websocket
     // endpoint, so the codex ws handshake (a GET upgrade) 404s and must fall back.
@@ -292,6 +325,7 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     // Streaming variant of the fallback: codex defaults to count_tokens = tiktoken,
     // so forward() builds an input-token estimate. The ws attempt fails (HTTP-only
@@ -558,6 +592,7 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::BeforeFirstEvent).await;
     let auth_path = write_fake_codex_auth();
@@ -603,6 +638,7 @@ async fn websocket_rate_limits_event_records_account_quota() {
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::CompleteTurn).await;
     let auth_path = write_fake_codex_auth();
@@ -661,6 +697,7 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
     let auth_path = write_fake_codex_auth();
@@ -710,6 +747,7 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     let total_hits = Arc::new(AtomicUsize::new(0));
     let (base_url, http_hits) =
@@ -756,6 +794,7 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     let token_a = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-a");
     let token_b = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-b");
@@ -837,6 +876,7 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
         return;
     }
     let _env = ENV_LOCK.lock().await;
+    let _accounts = IsolatedAccounts::new();
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
     let auth_path = write_fake_codex_auth();
