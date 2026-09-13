@@ -97,7 +97,7 @@ working. Both are shared with the other Responses providers and documented in
 [Effort & Context](/guides/effort-and-context/).
 
 **Tool search.** With Claude Code's `ENABLE_TOOL_SEARCH=true`, shunt maps deferred tool discovery on
-the Responses path onto the native client-executed `tool_search` protocol on GPT-5.4+ models. This
+the Responses path onto the native client-executed `tool_search` protocol on GPT-5.4+ and `gpt-6-astra` models. This
 provider targets `api.openai.com`, one of the two hosts the unset ("auto") default already trusts
 to implement `tool_search` items — alongside the ChatGPT/Codex backend — so it gets native for free;
 a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted) isn't auto-enabled the

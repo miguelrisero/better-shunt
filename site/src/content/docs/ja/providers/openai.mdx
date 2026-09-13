@@ -98,8 +98,8 @@ Responses の変換は、プロバイダー単位またはルート単位の推�
 Responses プロバイダーと共通で、[Effort & Context](/ja/guides/effort-and-context/) に記載されています。
 
 **ツール検索。** Claude Code の `ENABLE_TOOL_SEARCH=true` を設定すると、shunt は Responses パスの遅延ツール
-ディスカバリーを、GPT-5.4 以降のモデルにおけるネイティブなクライアント実行 `tool_search` プロトコルへ
-マッピングします。このプロバイダーは `api.openai.com` を対象としており、これは未設定（"auto"）のデフォルトが
+ディスカバリーを、GPT-5.4 以降および `gpt-6-astra` のモデルにおけるネイティブなクライアント実行
+`tool_search` プロトコルへマッピングします。このプロバイダーは `api.openai.com` を対象としており、これは未設定（"auto"）のデフォルトが
 `tool_search` アイテムを実装していると既に信頼している 2 つのホストのうちの 1 つです — もう 1 つは
 ChatGPT / Codex バックエンドです — そのためネイティブが自動的に有効になります。カスタムの OpenAI 互換
 エンドポイント（LiteLLM、vLLM、OpenRouter、自己ホスト）は同じようには自動有効化されないため、オプトインに
