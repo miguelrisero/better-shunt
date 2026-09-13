@@ -95,7 +95,7 @@ Responses 변환은 프로바이더별 또는 라우트별 추론 노력 다이�
 프로바이더와 공유되며 [노력 & 컨텍스트](/ko/guides/effort-and-context/)에 문서화되어 있습니다.
 
 **도구 검색.** Claude Code의 `ENABLE_TOOL_SEARCH=true`가 설정되면, shunt는 Responses 경로의 지연된 도구
-디스커버리를 GPT-5.4+ 및 `gpt-6-astra` 모델의 네이티브 클라이언트 실행 `tool_search` 프로토콜에 매핑합니다. 이 프로바이더는
+디스커버리를 GPT-5.4+ 모델의 네이티브 클라이언트 실행 `tool_search` 프로토콜에 매핑합니다. 이 프로바이더는
 `api.openai.com`을 대상으로 하는데, 이는 설정되지 않은("auto") 기본값이 `tool_search` 항목을 구현한다고
 이미 신뢰하는 두 호스트 중 하나이므로 — ChatGPT/Codex 백엔드와 나란히 — 네이티브를 공짜로 얻습니다.
 커스텀 OpenAI 호환 엔드포인트(LiteLLM, vLLM, OpenRouter, 자체 호스팅)는 같은 방식으로 자동 활성화되지

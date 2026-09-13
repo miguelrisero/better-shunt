@@ -97,7 +97,7 @@ Responses 转换支持一个按提供方或按路由的推理力度旋钮
 [力度与上下文](/zh-cn/guides/effort-and-context/) 中。
 
 **工具搜索。** 在 Claude Code 的 `ENABLE_TOOL_SEARCH=true` 下,shunt 会把 Responses 路径上的延迟工具发现
-映射到 GPT-5.4+ 和 `gpt-6-astra` 模型上原生的、由客户端执行的 `tool_search` 协议。该
+映射到 GPT-5.4+ 模型上原生的、由客户端执行的 `tool_search` 协议。该
 提供方指向 `api.openai.com`,它是未设置(“auto”)默认值已经信任其实现
 `tool_search` 项的两个主机之一 —— 另一个是 ChatGPT/Codex 后端 —— 所以它免费获得原生支持;
 而自定义的兼容 OpenAI 端点(LiteLLM、vLLM、OpenRouter、自托管)不会以同样的方式被自动启用,

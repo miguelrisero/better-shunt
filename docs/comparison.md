@@ -107,17 +107,15 @@ must add each revealed tool back into the `tools` array, which shunt
 re-derives from client history each turn), so the unset ("auto") default
 takes the native, append-only-`input` path only for a host already verified
 to implement `tool_search` items — the ChatGPT/Codex backend and
-`api.openai.com` — routing to a gpt-5.4+ or `gpt-6-astra` model; every other OpenAI-compatible
+`api.openai.com` — routing to a gpt-5.4+ model; every other OpenAI-compatible
 endpoint (LiteLLM, vLLM, OpenRouter, a self-hosted proxy, ...) keeps the shim
 unless the operator sets `tool_search = true` after confirming it implements
 the protocol, since most third-party Responses backends don't and would
 otherwise fail the turn instead of degrading gracefully. The native shapes
 were live-probe verified against the ChatGPT/Codex backend on gpt-5.6
 (2026-07-13, [#86]); `tool_search` is documented on the public OpenAI
-Responses API for gpt-5.4+ models; `gpt-6-astra` is flagged
-`supports_search_tool: true` in the Codex model catalog. xAI/Grok routes,
-gpt-5.2-and-below models, and other gpt-6 names keep the #43 shim regardless —
-silently, never an error. Set
+Responses API for gpt-5.4+ models. xAI/Grok routes and gpt-5.2-and-below
+models keep the #43 shim regardless — silently, never an error. Set
 `tool_search = false` to force the shim on a provider that would otherwise
 take the native path.
 

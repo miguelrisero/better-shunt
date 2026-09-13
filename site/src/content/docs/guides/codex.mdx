@@ -439,9 +439,8 @@ described above on every reveal:
 
 - The upstream must be a stock OpenAI or ChatGPT/Codex-flavored Responses backend. xAI/Grok routes
   always keep the shim.
-- The routed model must be **gpt-5.4 or later** (`gpt-5.4`, `gpt-5.5`, the `gpt-5.6` family, or
-  the catalog slug `gpt-6-astra`). Earlier slugs (`gpt-5.2` and below) and other gpt-6 names
-  keep the shim regardless of `tool_search`.
+- The routed model must be **gpt-5.4 or later** (`gpt-5.4`, `gpt-5.5`, or the `gpt-5.6` family).
+  Earlier slugs (`gpt-5.2` and below) keep the shim regardless of `tool_search`.
 - `ENABLE_TOOL_SEARCH=true` is still required on the Claude Code side — this flag only changes
   *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
 
@@ -454,8 +453,7 @@ most third-party Responses backends don't implement `tool_search` items, so auto
 there would fail the turn instead of degrading gracefully. The native shapes were live-probe
 verified against the ChatGPT/Codex backend on gpt-5.6 (2026-07-13,
 [pleaseai/shunt#86](https://github.com/pleaseai/shunt/pull/86)), and `tool_search` is documented
-on the public OpenAI Responses API for gpt-5.4+ models. The Codex model catalog also
-advertises `supports_search_tool: true` for `gpt-6-astra`.
+on the public OpenAI Responses API for gpt-5.4+ models.
 
 Set `tool_search = true` to opt a custom endpoint into the native path once you've confirmed it
 implements `tool_search` items — still subject to the flavor and model requirements above:
@@ -487,6 +485,6 @@ tool_search = false
 | Context bar over-reports / compacts early | Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS`; a discovery alias can't take it — use a non-`claude-` id. |
 | Web search returns nothing on a Grok route | xAI/Grok's Responses API doesn't support web search; shunt drops the tool. Use a `codex` or `openai` route. |
 | Tool search does nothing / all tool schemas sent every turn | Set `ENABLE_TOOL_SEARCH=true` — Claude Code disables tool search by default behind a non-Anthropic base URL. shunt forwards `tool_reference` blocks and reveals deferred schemas on demand. |
-| Tool search reclaims no context (still paying the shim's cache-invalidation cost) | Check the flavor/model gates — native `tool_search` needs a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ or `gpt-6-astra` model; unsupported combinations silently fall back to the shim. If both gates pass and you're on a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted), it isn't auto-enabled — set `tool_search = true` once you've confirmed it implements `tool_search` items. On a known host (`codex`/`openai`), confirm you haven't set `tool_search = false`; see [Tool search → Native protocol](#native-protocol) above. |
+| Tool search reclaims no context (still paying the shim's cache-invalidation cost) | Check the flavor/model gates — native `tool_search` needs a stock OpenAI/ChatGPT-Codex flavor and a gpt-5.4+ model; unsupported combinations silently fall back to the shim. If both gates pass and you're on a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted), it isn't auto-enabled — set `tool_search = true` once you've confirmed it implements `tool_search` items. On a known host (`codex`/`openai`), confirm you haven't set `tool_search = false`; see [Tool search → Native protocol](#native-protocol) above. |
 
 See the full [Troubleshooting](/reference/troubleshooting/) reference for more.
