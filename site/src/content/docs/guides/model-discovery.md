@@ -19,14 +19,14 @@ A curated model can declare its routing and upstream translation directly. The o
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"
+display_name = "GPT-6-Sol (via Codex)"
 
 [models.upstream_model]
-codex = "gpt-5.6-sol"
+codex = "gpt-6-sol"
 ```
 
-Selecting the alias routes it through `codex` and sends `gpt-5.6-sol` upstream. This map is the recommended exact-id form instead of a separate `[[routes]]` entry and takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`. Exactly one configured provider is supported per entry; invalid maps and a same-id `[[routes]]` entry are startup errors.
+Selecting the alias routes it through `codex` and sends `gpt-6-sol` upstream. This map is the recommended exact-id form instead of a separate `[[routes]]` entry and takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`. Exactly one configured provider is supported per entry; invalid maps and a same-id `[[routes]]` entry are startup errors.
 
 ## Use a separate route
 
@@ -34,13 +34,13 @@ Map-less `[[models]]` entries remain backward compatible. You can still pair one
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"     # must begin with claude/anthropic
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"     # must begin with claude/anthropic
+display_name = "GPT-6-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-5.6-sol-via-codex"  # the alias Claude Code sends
+model = "claude-gpt-6-sol-via-codex"  # the alias Claude Code sends
 provider = "codex"
-upstream_model = "gpt-5.6-sol"          # real slug forwarded to the ChatGPT backend
+upstream_model = "gpt-6-sol"          # real slug forwarded to the ChatGPT backend
 ```
 
 Then enable discovery (Claude Code v2.1.129+) and restart shunt + Claude Code:
@@ -49,7 +49,7 @@ Then enable discovery (Claude Code v2.1.129+) and restart shunt + Claude Code:
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
 
-The alias appears in `/model` labeled *From gateway*; selecting it sends `claude-gpt-5.6-sol-via-codex`, which shunt routes to `codex` and rewrites to `gpt-5.6-sol`.
+The alias appears in `/model` labeled *From gateway*; selecting it sends `claude-gpt-6-sol-via-codex`, which shunt routes to `codex` and rewrites to `gpt-6-sol`.
 
 For `gpt-*` ids without an alias, use `ANTHROPIC_CUSTOM_MODEL_OPTION` instead — see [Connect Claude Code](/guides/connect-claude-code/#4-select-a-mapped-model).
 
@@ -63,7 +63,7 @@ The builtin catalog is all tier-named, so it stays visible in Desktop; only your
 [[routes]]
 model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
 provider = "codex"
-upstream_model = "gpt-5.6-sol"   # real backend slug
+upstream_model = "gpt-6-sol"   # real backend slug
 ```
 
 Selecting it in Desktop resolves to the intended upstream. The route overrides the builtin catalog entry's default routing for that id, so pick a tier name whose backend mapping stays meaningful to your users.

@@ -15,6 +15,11 @@ Changes are deliberately pinned instead of deploying upstream main automatically
 - Progressive tool discovery and readable tool-reference history on non-Anthropic
   Messages providers. No arbitrary truncation of the callable catalog.
 - WebSocket tests isolate the Codex account store and restore the previous override.
+- Codex client identity pinned to openai/codex rust-v0.155.1, the floor for
+  `gpt-6-sol` and `gpt-6-luna` (`minimal_client_version: 0.155.0`).
+- Native Responses `tool_search` for the exact `gpt-6-astra`, `gpt-6-sol` and
+  `gpt-6-luna` slugs, matching `supports_search_tool` in the Codex catalog.
+- Discovery snapshot includes `claude-opus-5-5`.
 
 ## Upstream issue audit — 2026-09-12
 

@@ -46,9 +46,9 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 
 # A matching [models.upstream_model] entry wins first. [[routes]] is the legacy exact-match form checked next.
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
-# upstream_model = "gpt-5.6-sol"
+# upstream_model = "gpt-6-sol"
 # effort = "high"
 # service_tier = "priority"    # optional: pin service_tier for this route
 
@@ -81,7 +81,7 @@ providers:
     api_key_env: OPENAI_API_KEY
 
 routes:
-  - model: gpt-5.6-sol
+  - model: gpt-6-sol
     provider: codex
 
 route_prefixes:

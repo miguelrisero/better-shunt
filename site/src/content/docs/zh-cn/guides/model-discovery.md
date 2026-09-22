@@ -17,14 +17,14 @@ Claude Code 会忽略任何不以 `claude`/`anthropic` 开头的发现 id([协�
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"
+display_name = "GPT-6-Sol (via Codex)"
 
 [models.upstream_model]
-codex = "gpt-5.6-sol"
+codex = "gpt-6-sol"
 ```
 
-选择该别名会将请求路由到 `codex`,并向上游发送 `gpt-5.6-sol`。对于精确 id,此映射比单独的 `[[routes]]` 条目更值得推荐,并且优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`。每个条目目前只支持一个已配置的 provider;无效映射或同 id 的 `[[routes]]` 条目会导致启动错误。
+选择该别名会将请求路由到 `codex`,并向上游发送 `gpt-6-sol`。对于精确 id,此映射比单独的 `[[routes]]` 条目更值得推荐,并且优先于 `[[routes]]`、`[[route_prefixes]]` 和 `server.default_provider`。每个条目目前只支持一个已配置的 provider;无效映射或同 id 的 `[[routes]]` 条目会导致启动错误。
 
 ## 使用单独的路由
 
@@ -32,13 +32,13 @@ codex = "gpt-5.6-sol"
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"     # 必须以 claude/anthropic 开头
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"     # 必须以 claude/anthropic 开头
+display_name = "GPT-6-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-5.6-sol-via-codex"  # Claude Code 发送的别名
+model = "claude-gpt-6-sol-via-codex"  # Claude Code 发送的别名
 provider = "codex"
-upstream_model = "gpt-5.6-sol"          # 转发给 ChatGPT 后端的真实 slug
+upstream_model = "gpt-6-sol"          # 转发给 ChatGPT 后端的真实 slug
 ```
 
 然后启用发现(Claude Code v2.1.129+)并重启 shunt + Claude Code:
@@ -47,7 +47,7 @@ upstream_model = "gpt-5.6-sol"          # 转发给 ChatGPT 后端的真实 slug
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
 
-该别名会出现在 `/model` 中,标记为 *From gateway*;选择它会发送 `claude-gpt-5.6-sol-via-codex`,shunt 将其路由到 `codex` 并重写为 `gpt-5.6-sol`。
+该别名会出现在 `/model` 中,标记为 *From gateway*;选择它会发送 `claude-gpt-6-sol-via-codex`,shunt 将其路由到 `codex` 并重写为 `gpt-6-sol`。
 
 对于没有别名的 `gpt-*` id,请改用 `ANTHROPIC_CUSTOM_MODEL_OPTION` —— 见 [连接 Claude Code](/zh-cn/guides/connect-claude-code/#4-选择一个映射的模型)。
 
@@ -61,7 +61,7 @@ Claude Code 接受任何以 `claude`/`anthropic` 开头的发现 id,但 **Claude
 [[routes]]
 model = "claude-sonnet-5"        # Claude Desktop 识别的 tier 命名 id
 provider = "codex"
-upstream_model = "gpt-5.6-sol"   # 真实后端 slug
+upstream_model = "gpt-6-sol"   # 真实后端 slug
 ```
 
 在 Desktop 中选择它会解析到预期的上游。该 route 会覆盖内置目录中该 id 的默认路由,因此请选择一个后端映射对用户仍然有意义的 tier 名称。

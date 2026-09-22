@@ -32,7 +32,7 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-/// Expands one row per model so the table reads as data rather than eleven
+/// Expands one row per model so the table reads as data rather than twelve
 /// repetitions of the same struct literal:
 /// `id => display_name, created_at, max_input_tokens, max_tokens;`
 macro_rules! builtin_models {
@@ -48,6 +48,7 @@ macro_rules! builtin_models {
 }
 
 const BUILTIN_MODELS: &[BuiltinModel] = builtin_models![
+    "claude-opus-5-5" => "Claude Opus 5.5", "2026-09-22T00:00:00Z", 1_000_000, 128_000;
     "claude-opus-5" => "Claude Opus 5", "2026-07-24T00:00:00Z", 1_000_000, 128_000;
     "claude-sonnet-5" => "Claude Sonnet 5", "2026-06-29T00:00:00Z", 1_000_000, 128_000;
     "claude-fable-5" => "Claude Fable 5", "2026-06-07T00:00:00Z", 1_000_000, 128_000;
@@ -297,6 +298,7 @@ mod tests {
             body,
             json!({
                 "data": [
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-22T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -310,7 +312,7 @@ mod tests {
                     {"type": "model", "id": "claude-opus-4-1-20250805", "display_name": "Claude Opus 4.1", "created_at": "2025-08-05T00:00:00Z", "max_input_tokens": 200000, "max_tokens": 32000}
                 ],
                 "has_more": false,
-                "first_id": "claude-opus-5",
+                "first_id": "claude-opus-5-5",
                 "last_id": "claude-opus-4-1-20250805"
             })
         );
@@ -347,6 +349,7 @@ mod tests {
                 "data": [
                     {"type": "model", "id": "claude-opus-4-8", "display_name": "Opus Curated"},
                     {"type": "model", "id": "claude-custom-model"},
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-22T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},

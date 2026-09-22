@@ -199,7 +199,7 @@ headers = { "x-api-key" = "..." }
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `model` | *(必須)* | Codex クライアントが Responses 本文で送る公開モデル id。**完全一致**かつ**大文字小文字を区別**します — prefix マッチも `[1m]` の除去も文字集合の制限もないため、`MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` のようなベンダーのスラッグも書いたとおりにルーティングされます |
+| `model` | *(必須)* | Codex クライアントが Responses 本文で送る公開モデル id。**完全一致**かつ**大文字小文字を区別**します — prefix マッチも `[1m]` の除去も文字集合の制限もないため、`MiniMax-M3`、`openai/gpt-6-sol`、`~openai/gpt-latest` のようなベンダーのスラッグも書いたとおりにルーティングされます |
 | `provider` | *(必須)* | このモデルを提供する provider。`kind = "responses"` でなければならず、credential を持たない auth モード（`passthrough` または `none`）は使えません |
 | `upstream_model` | `model` | アップストリームへ送るモデル id。`model` と異なる場合、shunt は本文トップレベルの `model` だけを書き換え、他のフィールドはそのまま残します |
 

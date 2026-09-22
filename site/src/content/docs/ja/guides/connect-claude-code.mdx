@@ -136,14 +136,14 @@ codex login                    # codex/ChatGPT provider (auto-refreshed thereaft
 Claude Code の model discovery は `claude`/`anthropic` で始まる id のみを尊重するため、OpenAI/Codex の id（`gpt-*`）には `ANTHROPIC_CUSTOM_MODEL_OPTION` を使います — これは、id が検証をスキップするピッカーエントリを追加します。
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 そして Claude Code で `/model` から選びます。その id は shunt がルーティングに使うものなので、一致する `[models.upstream_model]` エントリ、`[[routes]]`、または `[[route_prefixes]]` ルールで解決される必要があります。
 
 2 つのピッカー公開方法は `claude-`/`anthropic-` プレフィックスできれいに分かれます — 重複しません。discovery は `claude-`/`anthropic-` の id *のみ*を尊重します。`ANTHROPIC_CUSTOM_MODEL_OPTION` と `CLAUDE_CODE_MAX_CONTEXT_TOKENS` のウィンドウオーバーライドは、そのプレフィックスで**始まらない** id *のみ*に適用されます。
 
-| 何 | `claude-`/`anthropic-` id（discovery エイリアス） | 非 `claude-` id（例 `gpt-5.6-sol`） |
+| 何 | `claude-`/`anthropic-` id（discovery エイリアス） | 非 `claude-` id（例 `gpt-6-sol`） |
 | :-- | :-- | :-- |
 | [`/v1/models` discovery](/ja/guides/model-discovery/) → `/model` ピッカー | ✅ 自動リスト（「From gateway」）、多数のモデル | ❌ Claude Code が落とす |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ 尊重されない | ✅ ピッカーに追加（**1 つの id のみ**） |
@@ -155,7 +155,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 
 <Aside type="tip" title="または tier エイリアスをリマップする">
 
-第 3 の選択肢は、Claude Code の組み込み `haiku`/`sonnet`/`opus` エイリアスを Codex スラッグへ再度向けること（例 `haiku → gpt-5.6-luna`、`sonnet → gpt-5.6-sol`）で、セッション全体の tier システムを `ANTHROPIC_CUSTOM_MODEL_OPTION` なしであなたの ChatGPT サブスクリプションへ解決させます。[ChatGPT / Codex → tier エイリアスをリマップする](/ja/guides/codex/#tier-エイリアスを-codex-へリマップする)を参照してください。
+第 3 の選択肢は、Claude Code の組み込み `haiku`/`sonnet`/`opus` エイリアスを Codex スラッグへ再度向けること（例 `haiku → gpt-6-luna`、`sonnet → gpt-6-sol`）で、セッション全体の tier システムを `ANTHROPIC_CUSTOM_MODEL_OPTION` なしであなたの ChatGPT サブスクリプションへ解決させます。[ChatGPT / Codex → tier エイリアスをリマップする](/ja/guides/codex/#tier-エイリアスを-codex-へリマップする)を参照してください。
 
 </Aside>
 
@@ -169,7 +169,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 # .claude/agents/researcher.md
 ---
 name: researcher
-model: gpt-5.6-sol   # this agent's inference is diverted; the main session stays on Claude
+model: gpt-6-sol   # this agent's inference is diverted; the main session stays on Claude
 ---
 ```
 
@@ -189,7 +189,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 その後 `claude` を起動し、`/status` を実行して、**Anthropic base URL** の行にあなたのゲートウェイが表示されていることを確認します。reasoning エフォートとコンテキストウィンドウのチューニングについては [Effort & Context](/ja/guides/effort-and-context/) も参照してください。

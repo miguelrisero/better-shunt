@@ -7,7 +7,7 @@ description: 常见的 shunt 错误及其修复方法。
 | :-- | :-- |
 | `ChatGPT auth not found; run codex login` | shunt 无法读取 `~/.codex/auth.json`。运行 `codex login`。 |
 | 映射模型上的 `authentication_error` | 提供方凭据过期/缺失 —— 重新运行 `codex login`,或 export `OPENAI_API_KEY`。shunt 会透出后端真实的 `detail` 消息。 |
-| `400 … model is not supported when using Codex with a ChatGPT account` | 你用了一个 `-codex` slug(或一个你账户未被授权的 slug)。使用 [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) 中一个已授权的 slug(例如 `gpt-5.6-sol`、`gpt-5.5`),或设置 `upstream_model`。 |
+| `400 … model is not supported when using Codex with a ChatGPT account` | 你用了一个 `-codex` slug(或一个你账户未被授权的 slug)。使用 [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) 中一个已授权的 slug(例如 `gpt-6-sol`、`gpt-5.5`),或设置 `upstream_model`。 |
 | `/model` 没有列出你的模型 | 对于 `gpt-*` id 使用 `ANTHROPIC_CUSTOM_MODEL_OPTION`;[发现](/zh-cn/guides/model-discovery/) 只暴露 `claude`/`anthropic` 前缀的 id。 |
 | `opus` 选择 Opus 4.7 / `sonnet` 选择 Sonnet 4.6 | Claude Code 的内置别名表会为网关会话钉住这些层级。使用 `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5` 在客户端钉住层级,或在 shunt 中重映射 id —— 见[模型别名](/zh-cn/guides/model-aliases/#别名解析)。 |
 | Opus/Fable 的上下文窗口显示 200K | 只有 base URL 为 `api.anthropic.com` 时,Claude Code 才会信任模型的原生 1M 窗口。选择 `opus[1m]` / `fable[1m]` —— 见[模型别名](/zh-cn/guides/model-aliases/#1m-上下文不会自动应用)。 |

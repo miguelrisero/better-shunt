@@ -721,7 +721,7 @@ subscription. Full spec: [`m6-xai-provider.md`](m6-xai-provider.md).
 ```toml
 # built-in defaults already define [providers.xai]; you only add routes
 [[routes]]
-model = "grok-4.6"          # current frontier model
+model = "grok-4.7"          # current frontier model
 provider = "xai"
 
 [[routes]]
@@ -741,7 +741,7 @@ auth = "xai_oauth"          # reuse the SuperGrok / X Premium+ login instead of 
 # base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai or non-https host
 
 [[routes]]
-model = "grok-4.6"
+model = "grok-4.7"
 provider = "xai"
 
 [[routes]]
@@ -801,18 +801,18 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog
 > of Codex slugs (and the reasoning levels each accepts) is openai/codex's
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-> The current listed slugs are **`gpt-6-astra`** (latest), **`gpt-5.6-sol`**, **`gpt-5.6-terra`**,
-> **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
+> The current listed slugs are **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
+> **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`**, and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
 > **`gpt-5.2`**; older accounts may only be entitled to the earlier ones. Use `upstream_model` in
 > a route, or pass an entitled slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
 > **Client-version gating:** some slugs additionally carry a `minimal_client_version` (e.g.
-> `gpt-6-astra` requires ≥ 0.153.0) and the backend answers **`Model not found <slug>`** — not
+> `gpt-6-astra` requires ≥ 0.153.0; `gpt-6-sol` and `gpt-6-luna` require ≥ 0.155.0) and the backend answers **`Model not found <slug>`** — not
 > an entitlement error — when the request's client identity is missing or too old. The gate keys
 > on the `originator` + `version` headers ([openai/codex#31967](https://github.com/openai/codex/issues/31967)).
 > shunt therefore sends the Codex CLI identity headers (`originator: codex_cli_rs`,
 > `version`, and a matching `user-agent`) on ChatGPT OAuth requests, **pinned to
-> openai/codex rust-v0.153.3**. If a future slug demands a newer client, bump the pinned
+> openai/codex rust-v0.155.1**. If a future slug demands a newer client, bump the pinned
 > version in `src/adapters/responses/request.rs` (`CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION`).
 
 Per-context selection also works via Claude Code's own knobs — divert one agent to a mapped model
@@ -931,8 +931,9 @@ it to the Responses `reasoning.effort` for mapped models:
 Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
 (`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` and the gpt-6 slugs (e.g.
-`gpt-6-astra`) accept up to `max` — `sol`/`terra`/`astra` even `ultra`, which Claude Code never
-sends and `gpt-5.6-luna` does not list — while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) accept up to `max` — `gpt-5.6-sol`/`-terra`,
+`gpt-6-astra` and `gpt-6-sol` even `ultra`, which Claude Code never sends and the two `luna`
+slugs do not list — while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
 `max → xhigh` only for slugs that don't support it.
 
 **A custom gateway id like `gpt-5.6-sol` carries effort on its own.** Verified on the wire against Claude Code v2.1.224: the request already

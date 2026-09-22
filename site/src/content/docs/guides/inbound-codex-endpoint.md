@@ -154,7 +154,7 @@ What changes for a routed request to a **non-ChatGPT** upstream:
 - **Identity encoding.** A zstd request body is decoded first — a stock Responses API does not accept that encoding — and `content-encoding` is not forwarded.
 - **One credential, no failover.** There is no pool behind a routed third party, so a 429 or 5xx relays verbatim with its `retry-after` instead of triggering rotation.
 
-Matching is exact and case-sensitive with no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-5.6-sol`, and `~openai/gpt-latest` route as written. A route to another `chatgpt_oauth` provider instead keeps the full pool passthrough. Routes are read from the live config, so they take effect on reload.
+Matching is exact and case-sensitive with no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-6-sol`, and `~openai/gpt-latest` route as written. A route to another `chatgpt_oauth` provider instead keeps the full pool passthrough. Routes are read from the live config, so they take effect on reload.
 
 ## What's different from `/v1/messages`
 

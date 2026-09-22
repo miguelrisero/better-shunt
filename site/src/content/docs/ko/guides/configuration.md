@@ -45,9 +45,9 @@ auth = "chatgpt_oauth"         # ~/.codex/auth.json 재사용
 
 # 일치하는 [models.upstream_model] 항목이 먼저 적용됩니다. [[routes]]는 그다음 확인하는 레거시 정확 일치 형식입니다.
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
-# upstream_model = "gpt-5.6-sol"
+# upstream_model = "gpt-6-sol"
 # effort = "high"
 
 # 그다음 프리픽스 일치.

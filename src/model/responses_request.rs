@@ -339,9 +339,11 @@ fn input_items(request: &Value, context: &ToolSearchContext) -> Vec<Value> {
 ///
 /// Which levels the ChatGPT/Codex backend accepts is per-model, listed in
 /// openai/codex `codex-rs/models-manager/models.json` (`supported_reasoning_levels`):
-/// the gpt-5.6 and gpt-6 families accept up to `max` (sol/terra even `ultra`), while
-/// the gpt-5.5/5.4/5.2 slugs cap at `xhigh`. So `max` passes through for a model that
-/// supports it and folds to `xhigh` otherwise. (Claude Code never emits `ultra`.)
+/// the gpt-5.6 and gpt-6 families accept up to `max` (gpt-5.6-sol/-terra,
+/// gpt-6-astra and gpt-6-sol even `ultra`; gpt-5.6-luna and gpt-6-luna top out
+/// at `max`), while the gpt-5.5/5.4/5.2 slugs cap at `xhigh`. So `max` passes
+/// through for a model that supports it and folds to `xhigh` otherwise. (Claude
+/// Code never emits `ultra`.)
 fn map_effort(effort: &str, model: &str) -> String {
     if effort == "max" && !supports_max_effort(model) {
         "xhigh".to_string()
@@ -1009,6 +1011,8 @@ mod tests {
         // gpt-6* accept `max` natively, so it must not fold to xhigh.
         let request = json!({"output_config": {"effort": "max"}});
         assert_eq!(effort(&request, &codex_route_model("gpt-6-astra")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6-sol")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6-luna")), "max");
         assert_eq!(effort(&request, &codex_route_model("gpt-6-pro")), "max");
     }
 

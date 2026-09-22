@@ -78,14 +78,14 @@ shunt 提供 `GET /v1/models`，因此 Claude Desktop 会在启动时自动发�
 // （每个条目还带有 "type": "model"、"display_name"、"created_at"、
 //   "max_input_tokens" 和 "max_tokens"）
 { "data": [
-  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
-  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
-  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
-  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-opus-4-1-20250805" }
+  { "id": "claude-opus-5-5" },   { "id": "claude-opus-5" },
+  { "id": "claude-sonnet-5" },   { "id": "claude-fable-5" },
+  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
+  { "id": "claude-sonnet-4-6" }, { "id": "claude-opus-4-6" },
+  { "id": "claude-opus-4-5-20251101" }, { "id": "claude-haiku-4-5-20251001" },
+  { "id": "claude-sonnet-4-5-20250929" }, { "id": "claude-opus-4-1-20250805" }
 ], "has_more": false,
-   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
+   "first_id": "claude-opus-5-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 维护的 `claude-<slug>-via-<provider>` 别名（可用于 Claude Code 的模式）会**被 Claude Desktop 丢弃** —— 见[模型发现 → Claude Desktop 只识别 tier 命名的 id](/zh-cn/guides/model-discovery/#claude-desktop-只识别-tier-命名的-id)。
@@ -98,7 +98,7 @@ shunt 提供 `GET /v1/models`，因此 Claude Desktop 会在启动时自动发�
   [[routes]]
   model = "claude-sonnet-5"        # Claude Desktop 识别的 tier 命名 id
   provider = "codex"
-  upstream_model = "gpt-5.6-sol"   # 真实后端 slug
+  upstream_model = "gpt-6-sol"   # 真实后端 slug
   ```
 
 - **在 Desktop 侧覆盖发现**，通过显式的 `inferenceModels` 列表填写 shunt 实际路由的确切 id。如果每个条目都是完整 id，Claude Desktop 会跳过 `/v1/models` 请求。

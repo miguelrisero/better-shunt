@@ -78,14 +78,14 @@ shunt serves `GET /v1/models`, so Claude Desktop auto-discovers the picker at la
 // (each entry also carries "type": "model", "display_name", "created_at",
 //  "max_input_tokens", and "max_tokens")
 { "data": [
-  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
-  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
-  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
-  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-opus-4-1-20250805" }
+  { "id": "claude-opus-5-5" },   { "id": "claude-opus-5" },
+  { "id": "claude-sonnet-5" },   { "id": "claude-fable-5" },
+  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
+  { "id": "claude-sonnet-4-6" }, { "id": "claude-opus-4-6" },
+  { "id": "claude-opus-4-5-20251101" }, { "id": "claude-haiku-4-5-20251001" },
+  { "id": "claude-sonnet-4-5-20250929" }, { "id": "claude-opus-4-1-20250805" }
 ], "has_more": false,
-   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
+   "first_id": "claude-opus-5-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 A curated `claude-<slug>-via-<provider>` alias (the pattern that works in Claude Code) is **dropped by Claude Desktop** — see [Model Discovery → Claude Desktop recognizes only tier-named ids](/guides/model-discovery/#claude-desktop-recognizes-only-tier-named-ids).
@@ -98,7 +98,7 @@ A curated `claude-<slug>-via-<provider>` alias (the pattern that works in Claude
   [[routes]]
   model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
   provider = "codex"
-  upstream_model = "gpt-5.6-sol"   # real backend slug
+  upstream_model = "gpt-6-sol"   # real backend slug
   ```
 
 - **Override discovery on the Desktop side** with an explicit `inferenceModels` list of the exact ids shunt routes on. When every entry is a full id, Claude Desktop skips the `/v1/models` call.

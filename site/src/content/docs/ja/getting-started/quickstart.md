@@ -12,7 +12,7 @@ shunt はすべてのプロバイダーが事前設定済みで出荷される�
 ```toml
 # Exact model id -> provider
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"     # reuses your ChatGPT login via `codex login`
 
 # Or send every gpt-* id to the OpenAI API
@@ -49,12 +49,12 @@ shunt run
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1   # so /effort maps to reasoning.effort
 claude
 ```
 
-Claude Code 内で `/model` を実行し、`gpt-5.6-sol` を選びます。マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。
+Claude Code 内で `/model` を実行し、`gpt-6-sol` を選びます。マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。
 
 ## 5. 検証
 
@@ -65,7 +65,7 @@ Claude Code を開く前に（あるいは開かずに）ゲートウェイを�
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 `{"id":"msg_` で始まる JSON レスポンスが返れば成功です。Claude Code 内では、`/status` で **Anthropic base URL** が `http://127.0.0.1:3001` と表示されるはずです。

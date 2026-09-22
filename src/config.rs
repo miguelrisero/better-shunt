@@ -1891,7 +1891,8 @@ pub enum ResponsesFlavor {
 }
 
 /// Whether `model` matches the supported native Responses `tool_search` models.
-/// The Codex model catalog advertises `supports_search_tool` for `gpt-6-astra`.
+/// The Codex model catalog advertises `supports_search_tool` for `gpt-6-astra`,
+/// `gpt-6-sol` and `gpt-6-luna`.
 fn model_supports_tool_search(model: &str) -> bool {
     // Match each documented "gpt-5.N" family as a whole minor version: the digit
     // must be followed by a non-digit (or end of string), so "gpt-5.4" matches
@@ -1908,7 +1909,7 @@ fn model_supports_tool_search(model: &str) -> bool {
     if gpt5 {
         return true;
     }
-    model == "gpt-6-astra"
+    matches!(model, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -7766,6 +7767,15 @@ id = "claude-sonnet-5"
         let hinted = crate::routing::resolve_model(&config, "gpt-6-astra[1m]");
         assert_eq!(hinted.upstream_model, "gpt-6-astra");
         assert!(config.native_tool_search("codex", &hinted.upstream_model));
+        // Codex catalog slugs `gpt-6-sol` / `gpt-6-luna` (`supports_search_tool: true`).
+        for model in ["gpt-6-sol", "gpt-6-luna"] {
+            assert!(config.native_tool_search("codex", model), "{model}");
+            assert!(config.native_tool_search("openai", model), "{model}");
+            assert!(!config.native_tool_search("xai", model), "{model}");
+        }
+        for model in ["gpt-6-sol-preview", "gpt-6-lunar", "openai/gpt-6-sol"] {
+            assert!(!config.native_tool_search("codex", model), "{model}");
+        }
 
         // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those
         // are undocumented families whose backend may reject the native wire.
@@ -7774,7 +7784,7 @@ id = "claude-sonnet-5"
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
-        // Other gpt-6 slugs and close names must not borrow Astra's flag.
+        // Other gpt-6 slugs and close names must not borrow the catalog flag.
         assert!(!config.native_tool_search("codex", "gpt-6-pro"));
         assert!(!config.native_tool_search("codex", "gpt-6"));
         assert!(!config.native_tool_search("codex", "gpt-6-astral"));

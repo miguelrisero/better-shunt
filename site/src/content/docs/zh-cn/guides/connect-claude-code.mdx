@@ -136,14 +136,14 @@ codex login                    # codex/ChatGPT 提供方(此后自动刷新)
 Claude Code 的模型发现只认以 `claude`/`anthropic` 开头的 id,因此对于 OpenAI/Codex id(`gpt-*`),请使用 `ANTHROPIC_CUSTOM_MODEL_OPTION` —— 它添加一个选择器条目,其 id 跳过校验:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 然后在 Claude Code 中从 `/model` 选择它。该 id 正是 shunt 路由所依据的,因此它必须通过匹配的 `[models.upstream_model]` 条目、`[[routes]]` 或 `[[route_prefixes]]` 规则来解析。
 
 两种选择器暴露方法以 `claude-`/`anthropic-` 前缀清晰分界 —— 它们互不重叠。发现*只*认 `claude-`/`anthropic-` id;`ANTHROPIC_CUSTOM_MODEL_OPTION` 和 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 窗口覆盖*只*适用于**不**以该前缀开头的 id:
 
-| 项目 | `claude-`/`anthropic-` id(发现别名) | 非 `claude-` id(如 `gpt-5.6-sol`) |
+| 项目 | `claude-`/`anthropic-` id(发现别名) | 非 `claude-` id(如 `gpt-6-sol`) |
 | :-- | :-- | :-- |
 | [`/v1/models` 发现](/zh-cn/guides/model-discovery/) → `/model` 选择器 | ✅ 自动列出(“From gateway”),多个模型 | ❌ 被 Claude Code 丢弃 |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ 不生效 | ✅ 加入选择器(**仅一个 id**) |
@@ -155,7 +155,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 
 <Aside type="tip" title="或重映射分层别名">
 
-第三个选项是把 Claude Code 的内置 `haiku`/`sonnet`/`opus` 别名重新指向 Codex slug(例如 `haiku → gpt-5.6-luna`,`sonnet → gpt-5.6-sol`),使整个会话的分层系统在不用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 的情况下解析到你的 ChatGPT 订阅。见 [ChatGPT / Codex → 将分层别名重映射到 Codex](/zh-cn/guides/codex/#将分层别名重映射到-codex)。
+第三个选项是把 Claude Code 的内置 `haiku`/`sonnet`/`opus` 别名重新指向 Codex slug(例如 `haiku → gpt-6-luna`,`sonnet → gpt-6-sol`),使整个会话的分层系统在不用 `ANTHROPIC_CUSTOM_MODEL_OPTION` 的情况下解析到你的 ChatGPT 订阅。见 [ChatGPT / Codex → 将分层别名重映射到 Codex](/zh-cn/guides/codex/#将分层别名重映射到-codex)。
 
 </Aside>
 
@@ -169,7 +169,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 # .claude/agents/researcher.md
 ---
 name: researcher
-model: gpt-5.6-sol   # 这个 agent 的推理被分流;主会话留在 Claude 上
+model: gpt-6-sol   # 这个 agent 的推理被分流;主会话留在 Claude 上
 ---
 ```
 
@@ -189,7 +189,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 然后启动 `claude`,运行 `/status`,并检查 **Anthropic base URL** 那一行显示的是你的网关。关于推理力度和上下文窗口调优,另见 [力度与上下文](/zh-cn/guides/effort-and-context/)。

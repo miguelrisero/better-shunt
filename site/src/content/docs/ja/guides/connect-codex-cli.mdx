@@ -57,7 +57,7 @@ Codex CLI は、使用する base URL が何であれ `/responses` を末尾に�
 ```toml
 # ~/.codex/config.toml
 model_provider = "shunt"          # select it as the active provider
-model = "gpt-5.6-sol"             # an entitled slug — see step 5
+model = "gpt-6-sol"             # an entitled slug — see step 5
 
 [model_providers.shunt]
 name = "shunt"
@@ -238,10 +238,10 @@ entitle されている**スラッグしか受け付けません — `gpt-*-code
 `~/.codex/config.toml` に次のように書きます。
 
 ```toml
-model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
+model = "gpt-6-sol"   # entitled slug, not a *-codex one
 ```
 
-現在 entitle されているスラッグは `gpt-5.6-sol` / `-terra` / `-luna` と `gpt-5.5` / `gpt-5.4` /
+現在 entitle されているスラッグは `gpt-6-sol` / `-terra` / `-luna` と `gpt-5.5` / `gpt-5.4` /
 `gpt-5.4-mini` / `gpt-5.2` です — 古いアカウントでは以前のものにしか entitle されていない場合があります。信頼できる一覧は
 [ChatGPT / Codex → モデルを `codex` へルーティングする](/ja/guides/codex/#3-モデルを-codex-へルーティングする)
 を参照してください。サブスクリプションが持たないモデルを指定したリクエストは、`chatgpt.com`
@@ -260,7 +260,7 @@ model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -H "content-type: application/json" \
   -H "x-shunt-token: <token>" \
-  -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
+  -d '{"model":"gpt-6-sol","input":"say hi","stream":true}'
 ```
 
 - `content-type: text/event-stream` と `x-shunt-account:` ヘッダーを伴う `200` ⇒ プールがリクエストを処理し、SSE がそのまま中継されています。
