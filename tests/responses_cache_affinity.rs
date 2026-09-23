@@ -85,6 +85,8 @@ async fn a_metadata_only_client_reaches_the_upstream_with_matching_affinity_fiel
     let _env = common::set_env(&[
         (
             "CACHE_AFFINITY_TEST_TOKEN",
+            // Unsigned `alg: none` fixture carrying only a test account id.
+            // nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
             "eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfYWNjb3VudF9pZCI6ICJhY2N0LXRlc3QtMSJ9fQ.sig",
         ),
         (
