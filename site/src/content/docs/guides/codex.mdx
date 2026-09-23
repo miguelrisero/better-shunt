@@ -118,9 +118,9 @@ exact `[[routes]]` → `[[route_prefixes]]` → `server.default_provider`.
 
 ```toml
 [[routes]]
-model = "gpt-5.6-sol"        # the id Claude Code sends (see §4 below)
+model = "gpt-6-sol"        # the id Claude Code sends (see §4 below)
 provider = "codex"
-# upstream_model = "gpt-5.6-sol"   # optional: forward a different slug upstream
+# upstream_model = "gpt-6-sol"   # optional: forward a different slug upstream
 # effort = "high"                  # optional: pin effort for this route
 ```
 
@@ -136,7 +136,7 @@ The ChatGPT-account backend **rejects** `gpt-*-codex` slugs (e.g. `gpt-5.2-codex
 it only accepts your account's **live-entitled** slugs. The authoritative catalog (and the
 reasoning levels each accepts) is openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-Current slugs: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` (latest), `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and
+Current slugs: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` (latest), `gpt-5.6-terra` and
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. Older accounts may only be entitled to the
 earlier ones (a free account has resolved to `gpt-5.5`). shunt surfaces the backend's own error
 `detail`, so a wrong slug returns the real reason.
@@ -164,7 +164,7 @@ shunt avoids this by sending the pinned Codex CLI identity headers (`originator:
 Claude Code's `/model` picker only honors discovery ids beginning with `claude`/`anthropic`, so a
 raw `gpt-*` id needs one of two paths — they split on the `claude-` prefix and don't overlap:
 
-| | `claude-…` discovery alias | non-`claude-` id (`gpt-5.6-sol`) |
+| | `claude-…` discovery alias | non-`claude-` id (`gpt-6-sol`) |
 | :-- | :-- | :-- |
 | `/model` picker via discovery | ✅ auto-listed, many models | ❌ dropped by Claude Code |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (one id) |
@@ -173,7 +173,7 @@ raw `gpt-*` id needs one of two paths — they split on the `claude-` prefix and
 **Primary path** — add the slug to the picker directly:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 That id is exactly what shunt routes on, so it must resolve through a matching
@@ -186,14 +186,14 @@ Codex models in the picker instead, use a `claude-`-named [discovery alias](/gui
 
 A subagent can run on a Codex slug while the main session stays on Claude. The `model:` frontmatter
 field accepts **any string** (unlike the Agent/Task tool's `model` parameter, which only takes the
-built-in aliases). To point an **existing** subagent at `gpt-5.6-sol`, edit its
+built-in aliases). To point an **existing** subagent at `gpt-6-sol`, edit its
 `.claude/agents/<name>.md` and set `model:`:
 
 ```markdown
 ---
 name: researcher
 description: Deep research agent.
-model: gpt-5.6-sol        # was: sonnet (or absent → inherited)
+model: gpt-6-sol        # was: sonnet (or absent → inherited)
 ---
 
 <the agent's system prompt — unchanged>
@@ -201,7 +201,7 @@ model: gpt-5.6-sol        # was: sonnet (or absent → inherited)
 
 Spawn it **without** a `model` override (the tool parameter outranks frontmatter). Resolution order:
 `CLAUDE_CODE_SUBAGENT_MODEL` > tool `model` > frontmatter > `inherit`. To force **every** subagent
-onto one slug, set `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"`.
+onto one slug, set `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-6-sol"`.
 
 Either way the slug needs explicit routing through a matching `[models.upstream_model]` entry,
 `[[routes]]`, or `[[route_prefixes]]` rule and, being non-`claude-`, obeys
@@ -212,7 +212,7 @@ Either way the slug needs explicit routing through a matching `[models.upstream_
 <Aside type="tip" title="Ready-made agents">
 
 The **[`shunt-codex` plugin](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)**
-ships subagents for `gpt-5.6-sol` / `-terra` / `-luna` — install with
+ships subagents for `gpt-6-sol` / `gpt-6-luna` / `gpt-5.6-terra` — install with
 `/plugin install shunt-codex@shunt` after `/plugin marketplace add pleaseai/shunt`.
 
 </Aside>
@@ -231,40 +231,40 @@ the whole session's tier system resolves to your ChatGPT subscription
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | the `sonnet` alias |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_FABLE_MODEL` | the `opus` / `fable` aliases |
 
-A two-tier setup — `haiku → gpt-5.6-luna`, `sonnet → gpt-5.6-sol`:
+A two-tier setup — `haiku → gpt-6-luna`, `sonnet → gpt-6-sol`:
 
 ```bash
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="gpt-5.6-luna"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-5.6-sol"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="gpt-6-luna"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-6-sol"
 
 # nicer picker labels (the _NAME/_DESCRIPTION companions work on a gateway)
-export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="GPT-5.6-Sol"
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="GPT-6-Sol"
 export ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION="ChatGPT/Codex Sol via shunt"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="GPT-5.6-Luna"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="GPT-6-Luna"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION="ChatGPT/Codex Luna via shunt (background tier)"
 ```
 
 ```toml
 # shunt.toml — both resolved ids need a route
 [[routes]]
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 provider = "codex"
 
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
 ```
 
-Selecting **Sonnet** in `/model` now runs `gpt-5.6-sol` via Codex, and every background/haiku task
-runs `gpt-5.6-luna` — the resolved id is exactly what shunt routes on, so no
+Selecting **Sonnet** in `/model` now runs `gpt-6-sol` via Codex, and every background/haiku task
+runs `gpt-6-luna` — the resolved id is exactly what shunt routes on, so no
 `ANTHROPIC_CUSTOM_MODEL_OPTION` is needed.
 
 
 
 <Aside type="note" title="Getting it right">
 
-- `gpt-5.6-sol` and `gpt-5.6-luna` are **both 372k**, so one global
-  `CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000` fits both tiers.
+- `gpt-6-sol` and `gpt-6-luna` share the Codex catalog `context_window` of **272k**, so one global
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000` fits both tiers.
 - The `_SUPPORTED_CAPABILITIES` companion is documented for third-party providers (Bedrock, …), not
   confirmed for gateways. It isn't needed for the effort dial on shunt — these ids already send
   effort.
@@ -313,7 +313,7 @@ exposes the same knob as a config key, at both provider and route level, exactly
 
 ```toml
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
 # service_tier = "priority"   # optional: opt in to Codex's "Fast" mode
 ```
@@ -336,11 +336,11 @@ out.
 
 ## 6. Context window
 
-Claude Code sizes its context bar at a fixed **200k** for mapped ids. `gpt-5.6-sol`'s real window
-is **372k** (`gpt-5.5` is 272k), so raise it for a non-`claude-` id:
+Claude Code sizes its context bar at a fixed **200k** for mapped ids. `gpt-6-sol`'s Codex catalog
+`context_window` is **272k** (the same as `gpt-5.5`), so raise it for a non-`claude-` id:
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000
 ```
 
 It's **global** (one value per session) and setting it larger than the real window causes
@@ -363,7 +363,7 @@ effort = "high"     # optional: pin high effort for all Codex traffic
 # service_tier = "fast"   # optional: opt in to Codex's "Fast" mode
 
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
 ```
 
@@ -374,11 +374,11 @@ codex login                                          # one-time
 ./target/release/shunt run                           # start the gateway
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"   # add to /model picker
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol's real window
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"   # add to /model picker
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000         # gpt-6-sol's Codex catalog context_window
 ```
 
-Pick **gpt-5.6-sol** from `/model`. Everything else in the session still flows to Anthropic
+Pick **gpt-6-sol** from `/model`. Everything else in the session still flows to Anthropic
 unchanged; only the mapped model's inference is answered by your ChatGPT/Codex subscription.
 
 ## Web search

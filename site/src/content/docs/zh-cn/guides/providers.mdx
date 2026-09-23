@@ -19,8 +19,8 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`anthropic`](/zh-cn/providers/anthropic/) | `anthropic` | `passthrough` | `api.anthropic.com` —— 转发调用方自己的凭据 |
 | [`openai`](/zh-cn/providers/openai/) | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | [`codex`](/zh-cn/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json` |
-| [`xai`](/zh-cn/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
-| [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
+| `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
+| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
@@ -145,7 +145,7 @@ codex login
 
 <Aside type="caution" title="模型 slug">
 
-ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
+ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受该账户实时授权的 slug。权威目录是 openai/codex 的 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。当前的 slug 有 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-terra` 以及 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`;较老的账户可能只被授权使用较早的那些。在路由中使用 `upstream_model` 可将任意别名映射到一个已授权的 slug。
 
 </Aside>
 
@@ -172,16 +172,6 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 </Aside>
 
 
-
-### xai / grok 提供方(Grok)
-
-两个内置提供方触达 xAI 的 **Grok** 模型,按凭据划分:**`grok`** 经由 OAuth 消费你的
-**SuperGrok / X Premium+** 订阅(`shunt login xai`,无按 token 计费),而
-**`xai`** 用一个 `XAI_API_KEY` 对接计量的开发者 API。订阅 bearer 和 API 密钥
-**不可**互换 —— 各自只对其自己的提供方有效。
-
-完整设置 —— 登录、两个提供方块、模型 slug、选择性启用的力度旋钮,以及
-授权方面的坑 —— 见专门的 [xAI / Grok 指南](/zh-cn/guides/xai/)。
 
 ## 添加一个兼容 Anthropic 的后端
 
@@ -262,7 +252,6 @@ provider = "kimi"
 | 插件 | 模型(每个一个 agent) | 提供方 |
 | :-- | :-- | :-- |
 | `shunt-codex` | `gpt-6-sol`、`gpt-5.6-terra`、`gpt-6-luna` | `codex`(ChatGPT 订阅) |
-| `shunt-xai` | `grok-4.7`、`grok-build-0.1` | `xai`(API 密钥)或 `grok`(订阅) |
 | `shunt-kimi` | `kimi-k3[1m]`、`kimi-k2.7-code` | `kimi` |
 | `shunt-deepseek` | `deepseek-v4-pro`、`deepseek-v4-flash` | `deepseek` |
 | `shunt-zai` | `glm-5.2`、`glm-4.7` | `zai` |
@@ -271,7 +260,7 @@ provider = "kimi"
 
 ```bash
 /plugin marketplace add pleaseai/shunt
-/plugin install shunt-xai@shunt
+/plugin install shunt-codex@shunt
 ```
 
-每个插件仍需要在 `shunt.toml` 中路由其提供方(见上文各节)并导出匹配的凭据 —— 插件自己的 README 会列出确切的路由和环境变量。grok 模型可由任一 xAI 提供方提供:`xai`(API 密钥,按 token 计费)或 `grok`(通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅;按等级设限 —— 遇到 403 时回退到 `xai`)。
+每个插件仍需要在 `shunt.toml` 中路由其提供方(见上文各节)并导出匹配的凭据 —— 插件自己的 README 会列出确切的路由和环境变量。

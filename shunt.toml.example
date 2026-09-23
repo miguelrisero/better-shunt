@@ -209,22 +209,6 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # auth = "cursor_oauth"
 # count_tokens = "tiktoken"
 
-# xAI Grok (EXPERIMENTAL). Two built-in providers cover the two ways in — you
-# only need to add [[routes]] (grok-4.7, grok-build-0.1). Pick one:
-#   • `xai`  — API key: the developer API (api.x.ai), billed per token.
-#              export XAI_API_KEY, then route models to provider = "xai".
-#   • `grok` — SuperGrok / X Premium+ subscription: the Grok CLI chat proxy
-#              (cli-chat-proxy.grok.com), no API billing. Run `shunt login xai`
-#              once, then route models to provider = "grok". The developer API
-#              rejects a subscription bearer (402/403), so the OAuth path targets
-#              the CLI surface and sends the Grok-CLI identity headers.
-# xAI may gate OAuth API access by tier (SuperGrok Heavy); if `grok` returns 403,
-# use the `xai` API-key path instead. See docs/m6-xai-provider.md.
-# Override a built-in only to change a default, e.g. a route-level effort:
-# [providers.grok]
-# effort = "high"              # opt-in: several grok models 400 on reasoning.effort, so it is
-                               # only sent when you configure an effort here or on a route.
-
 # --- Anthropic-compatible gateways: all `kind = "anthropic"` + an injected key.
 # Uncomment one, set its api_key_env, then add a matching [[routes]] below.
 # (Each provider's own model IDs are shown in a comment.)
@@ -289,7 +273,7 @@ provider = "openai"
 # reasoning levels each accepts) is openai/codex's models.json:
 #   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
 # The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna; older accounts may only
-# be entitled to gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
+# be entitled to gpt-5.6-terra / gpt-5.5 / gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
 # model = "gpt-6-sol"
 # provider = "codex"

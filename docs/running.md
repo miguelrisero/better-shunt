@@ -101,9 +101,9 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 # Legacy exact-match form. `upstream_model` and `effort` are optional overrides.
 # Prefer [[models]] + [models.upstream_model] for exact ids.
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
-# upstream_model = "gpt-5.6-sol"
+# upstream_model = "gpt-6-sol"
 # effort = "high"          # gpt-5.6 and gpt-6 slugs also accept "max"
 
 # Then prefix match.
@@ -705,67 +705,6 @@ when you need the client to enforce per-user policy.
   If the file is missing/expired, shunt returns an `authentication_error` telling you to run
   `codex login`.
 
-#### xAI Grok — API key or subscription OAuth
-
-> **⚠️ Experimental — not yet verified against the live xAI API.** Implemented from the
-> reference clients (Hermes, OpenCode) and covered by unit tests with mocked endpoints;
-> it has not been exercised with a real SuperGrok account or `XAI_API_KEY` yet. Expect
-> rough edges and report issues.
-
-shunt ships a built-in `xai` provider (`kind = "responses"`, `base_url = https://api.x.ai/v1`).
-It defaults to the **API-key** path; flip it to `xai_oauth` to reuse a **SuperGrok / X Premium+**
-subscription. Full spec: [`m6-xai-provider.md`](m6-xai-provider.md).
-
-**API key** (default) — just export the key and add routes:
-
-```toml
-# built-in defaults already define [providers.xai]; you only add routes
-[[routes]]
-model = "grok-4.7"          # current frontier model
-provider = "xai"
-
-[[routes]]
-model = "grok-build-0.1"    # flagship coding model
-provider = "xai"
-```
-
-```bash
-export XAI_API_KEY=xai-...
-```
-
-**Subscription OAuth** — flip the provider's `auth` and log in once with the device-code flow:
-
-```toml
-[providers.xai]
-auth = "xai_oauth"          # reuse the SuperGrok / X Premium+ login instead of a key
-# base_url stays https://api.x.ai/v1 — shunt refuses xai_oauth on a non-x.ai or non-https host
-
-[[routes]]
-model = "grok-4.7"
-provider = "xai"
-
-[[routes]]
-model = "grok-build-0.1"
-provider = "xai"
-```
-
-```bash
-shunt login xai            # prints a URL + code; approve in any browser
-```
-
-`shunt login xai` runs the RFC 8628 device-code flow: it prints a verification URL and short
-code, you approve in a browser (on any device — no loopback port needed, so it works over
-SSH/VPS/Docker), and it saves `~/.shunt/xai-auth.json` (override with `SHUNT_XAI_AUTH_FILE`).
-shunt refreshes the token automatically. A **403** on refresh means the account isn't entitled to
-xAI API access (a subscription-tier gate) — shunt says so distinctly and points you at the
-`XAI_API_KEY` path rather than telling you to re-login; a **400/401** tells you to run
-`shunt login xai` again.
-
-> **Reasoning effort is opt-in for grok.** Several grok models reject `reasoning.effort` with a
-> 400, so shunt sends the reasoning dial only when an effort was explicitly chosen — an `effort` on the route or provider, or a per-request `output_config.effort` from the client
-> (e.g. `effort = "high"` under `[providers.xai]` or a `[[routes]]` entry). Without it, grok
-> reasons on its own and shunt sends no `reasoning` object.
-
 ### 5.4 Select a mapped model (primary path)
 
 Claude Code's model-discovery only honors ids beginning with `claude`/`anthropic`, so for
@@ -773,7 +712,7 @@ OpenAI/Codex ids (`gpt-*`) use `ANTHROPIC_CUSTOM_MODEL_OPTION` — it adds a pic
 skips validation:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must resolve
@@ -787,7 +726,7 @@ that prefix. The consequence: a `claude-…-via-codex` discovery alias is conven
 one-tap selectable) but its context window is **stuck at the 200k default** — the override can't
 reach a `claude-`-prefixed id (§5.8).
 
-| What | `claude-`/`anthropic-` id (discovery alias) | non-`claude-` id (e.g. `gpt-5.6-sol`) |
+| What | `claude-`/`anthropic-` id (discovery alias) | non-`claude-` id (e.g. `gpt-6-sol`) |
 | :-- | :-- | :-- |
 | `/v1/models` discovery → `/model` picker | ✅ auto-listed ("From gateway"), many models | ❌ dropped by Claude Code |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (**one id only**) |
@@ -802,7 +741,7 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > of Codex slugs (and the reasoning levels each accepts) is openai/codex's
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 > The current listed slugs are **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
-> **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`**, and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
+> **`gpt-5.6-terra`**, and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
 > **`gpt-5.2`**; older accounts may only be entitled to the earlier ones. Use `upstream_model` in
 > a route, or pass an entitled slug via `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
@@ -851,7 +790,7 @@ claude --output-format stream-json --verbose -p \
 # `GET /routes` exposes exact `[[routes]]` entries only; it does not expand
 # `[[route_prefixes]]`.
 curl -s "${ANTHROPIC_BASE_URL%/}/routes" \
-  | jq '.data[] | select(.model == "gpt-5.6-sol")'
+  | jq '.data[] | select(.model == "gpt-6-sol")'
 ```
 
 Diagnose in that order: a `resolvedModel` that differs from the agent's frontmatter means Claude
@@ -874,11 +813,11 @@ id is dropped client-side no matter what; discovery is only useful when you expo
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"     # must begin with claude/anthropic
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"     # must begin with claude/anthropic
+display_name = "GPT-6-Sol (via Codex)"
 
 [models.upstream_model]
-codex = "gpt-5.6-sol"                   # provider = real upstream slug
+codex = "gpt-6-sol"                   # provider = real upstream slug
 ```
 
 This map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`
@@ -888,13 +827,13 @@ or multi-provider map, or a same-id `[[routes]]` entry is a startup error. Exist
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"
+display_name = "GPT-6-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-5.6-sol-via-codex"
+model = "claude-gpt-6-sol-via-codex"
 provider = "codex"
-upstream_model = "gpt-5.6-sol"
+upstream_model = "gpt-6-sol"
 ```
 
 Then enable discovery (Claude Code v2.1.129+) and restart shunt + Claude Code:
@@ -904,7 +843,7 @@ export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
 
 The alias appears in `/model` labeled *From gateway*; selecting it sends
-`claude-gpt-5.6-sol-via-codex`, which shunt routes to `codex` and rewrites to `gpt-5.6-sol`. Discovery
+`claude-gpt-6-sol-via-codex`, which shunt routes to `codex` and rewrites to `gpt-6-sol`. Discovery
 fails **silently** (3-second timeout, any redirect counts as failure) and falls back to the
 cached/built-in list — run `claude --debug` and look for `[gatewayDiscovery]` lines to confirm
 it ran. For `gpt-*` ids without an alias, use `ANTHROPIC_CUSTOM_MODEL_OPTION` (§5.4) instead.
@@ -930,10 +869,10 @@ it to the Responses `reasoning.effort` for mapped models:
 
 Which reasoning levels a Codex slug accepts is listed per-model in openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)
-(`supported_reasoning_levels`): `gpt-5.6-sol`/`-terra`/`-luna` and the gpt-6 slugs (e.g.
-`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) accept up to `max` — `gpt-5.6-sol`/`-terra`,
-`gpt-6-astra` and `gpt-6-sol` even `ultra`, which Claude Code never sends and the two `luna`
-slugs do not list — while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
+(`supported_reasoning_levels`): `gpt-5.6-terra` and the gpt-6 slugs (e.g.
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`) accept up to `max` — `gpt-5.6-terra`,
+`gpt-6-astra` and `gpt-6-sol` even `ultra`, which Claude Code never sends and `gpt-6-luna`
+does not list — while `gpt-5.5`/`5.4`/`5.2` cap at `xhigh`. shunt folds
 `max → xhigh` only for slugs that don't support it.
 
 **A custom gateway id like `gpt-5.6-sol` carries effort on its own.** Verified on the wire against Claude Code v2.1.224: the request already
@@ -1013,7 +952,7 @@ real size without `DISABLE_COMPACT`. Use a non-`claude-` id when you need the ac
 The other client-side lever is the `[1m]` model-id suffix, which forces a **1M** window — useful
 for a genuinely 1M-context model, but misleading (under-reporting) for a smaller one, so avoid it
 unless the upstream really has that window. shunt strips a trailing `[1m]` from the model id before
-route matching and before forwarding upstream (`routing.rs`), so `gpt-5.6-sol[1m]` (or a
+route matching and before forwarding upstream (`routing.rs`), so `gpt-6-sol[1m]` (or a
 `claude-…-via-codex[1m]` discovery alias) still routes correctly and the provider never sees the
 suffix — the hint stays purely client-side.
 
@@ -1119,7 +1058,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 A JSON response starting with `{"id":"msg_` means it worked.
@@ -1136,7 +1075,7 @@ mapped model.
 | :------ | :---------- |
 | `ChatGPT auth not found; run codex login` | shunt can't read `~/.codex/auth.json`. Run `codex login`. |
 | `authentication_error` on a mapped model | Expired/absent provider credential — re-run `codex login`, or export `OPENAI_API_KEY`. shunt surfaces the backend's real `detail` message. |
-| `400 ... model is not supported when using Codex with a ChatGPT account` | You used a `-codex` slug (or one your account isn't entitled to). Use an entitled slug from [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) (e.g. `gpt-5.6-sol`, `gpt-5.5`) or set `upstream_model`. |
+| `400 ... model is not supported when using Codex with a ChatGPT account` | You used a `-codex` slug (or one your account isn't entitled to). Use an entitled slug from [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) (e.g. `gpt-6-sol`, `gpt-5.5`) or set `upstream_model`. |
 | `/model` doesn't list your model | For `gpt-*` ids use `ANTHROPIC_CUSTOM_MODEL_OPTION`; discovery only surfaces `claude`/`anthropic`-prefixed ids. |
 | `config check failed` | Run `shunt check` for the exact reason (bind address, unknown provider in a route, wrong adapter/auth). |
 | Claude Code asks you to log in | Set an Anthropic credential (`ANTHROPIC_AUTH_TOKEN` / login) that shunt can forward for unmapped models. A base URL alone is not a credential. |
@@ -1165,6 +1104,6 @@ codex login                    # Codex/ChatGPT provider
 
 # 5. Point Claude Code at it and select a mapped model
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
-claude                         # then /model -> pick gpt-5.6-sol
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
+claude                         # then /model -> pick gpt-6-sol
 ```
