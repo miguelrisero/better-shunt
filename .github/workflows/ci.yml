@@ -13,6 +13,9 @@ env:
   RUSTFLAGS: -D warnings
   RUST_TEST_THREADS: 1
   CARGO_BUILD_JOBS: 2
+  # The --all-features debug target otherwise exhausts the runner disk while linking.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 jobs:
   test:
     name: fmt · clippy · test
