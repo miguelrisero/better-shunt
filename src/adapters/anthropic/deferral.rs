@@ -489,7 +489,7 @@ mod tests {
         let first: Value =
             serde_json::from_slice(&apply(&raw, "cloudflare/@cf/zai-org/glm-5.3")).unwrap();
         assert_eq!(first["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(apply(&raw, "claude-opus-5"), raw);
+        assert_eq!(apply(&raw, "claude-opus-5-5"), raw);
         let mut revealed = input;
         revealed["messages"] = serde_json::json!([{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":"fixture_42"},{"type":"text","text":"untouched"}]}]}]);
         let next: Value =
