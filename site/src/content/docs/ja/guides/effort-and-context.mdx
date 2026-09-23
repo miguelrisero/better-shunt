@@ -18,7 +18,7 @@ Codex スラッグがどの reasoning レベルを受け入れるかは、openai
 
 <Aside type="note" title="カスタムモデル id にはフラグが必要">
 
-`gpt-5.6-sol` のようなカスタムゲートウェイ id には `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定する必要があります — そうしないと Claude Code は、エフォート対応と認識しないモデル id に対して `output_config.effort` を省略し、shunt は `medium` にフォールバックします。
+`gpt-6-sol` のようなカスタムゲートウェイ id には `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定する必要があります — そうしないと Claude Code は、エフォート対応と認識しないモデル id に対して `output_config.effort` を省略し、shunt は `medium` にフォールバックします。
 
 ```bash
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1

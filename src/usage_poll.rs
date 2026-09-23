@@ -285,7 +285,7 @@ async fn fetch_codex_usage(
     let credential = match resolve_chatgpt_account(account, client).await {
         Ok(credential) => credential,
         Err(error) => {
-            tracing::debug!(provider, account = %account.name, error = %error.message, "usage poller: failed to resolve codex account credential");
+            tracing::debug!(provider, account = %account.name, error = %error.detail, "usage poller: failed to resolve codex account credential");
             return None;
         }
     };
@@ -831,6 +831,7 @@ mod tests {
                 api_key_header: ApiKeyHeader::Bearer,
                 effort: None,
                 service_tier: None,
+                classifier_model: None,
                 count_tokens: CountTokens::default(),
                 accounts: vec![account.clone()],
                 account_scope: Vec::new(),
@@ -840,6 +841,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
@@ -892,6 +894,7 @@ mod tests {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     service_tier: None,
+                    classifier_model: None,
                     count_tokens: CountTokens::default(),
                     accounts: vec![account.clone()],
                     account_scope: Vec::new(),
@@ -901,6 +904,7 @@ mod tests {
                     retry: Default::default(),
                     workspace_roots: Vec::new(),
                     sandbox: true,
+                    profile_dir: None,
                 },
             );
         }
@@ -961,6 +965,7 @@ mod tests {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![account],
             account_scope: Vec::new(),
@@ -970,6 +975,7 @@ mod tests {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         };
         let mut config = Config::default();
         config
@@ -1150,6 +1156,7 @@ mod tests {
                 api_key_header: ApiKeyHeader::Bearer,
                 effort: None,
                 service_tier: None,
+                classifier_model: None,
                 count_tokens: CountTokens::default(),
                 accounts: vec![first.clone(), second.clone(), third.clone()],
                 account_scope: Vec::new(),
@@ -1159,6 +1166,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
@@ -2603,6 +2611,7 @@ mod tests {
                 api_key_header: ApiKeyHeader::Bearer,
                 effort: None,
                 service_tier: None,
+                classifier_model: None,
                 count_tokens: CountTokens::default(),
                 accounts: vec![claude_account.clone()],
                 account_scope: Vec::new(),
@@ -2612,6 +2621,7 @@ mod tests {
                 retry: Default::default(),
                 workspace_roots: Vec::new(),
                 sandbox: true,
+                profile_dir: None,
             },
         );
         {

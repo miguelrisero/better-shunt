@@ -1,6 +1,6 @@
 ---
 name: gpt-6-sol
-description: General-purpose agent that runs on GPT-6-Sol (routed through the shunt gateway to the ChatGPT/Codex subscription). Its native reasoning effort is medium, tunable up to ultra. Use when you want a task handled by GPT-6-Sol instead of the default Claude model.
+description: General-purpose agent that runs on GPT-6-Sol (routed through the shunt gateway to the ChatGPT/Codex subscription). Sol is the workhorse for coding and everyday work — its native reasoning effort is medium, tunable up to ultra. Use when you want a task handled by GPT-6-Sol instead of the default Claude model.
 model: gpt-6-sol
 ---
 

@@ -23,7 +23,6 @@ use shunt::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
@@ -32,43 +31,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-/// Serializes tests that mutate the process-global `CODEX_AUTH_FILE` env var.
-/// Held across each test body so one test's teardown (`remove_var`) can never
-/// unset the auth file while another test's request is still resolving the
-/// credential.
-static ENV_LOCK: Mutex<()> = Mutex::const_new(());
-
-// Keep every test in this binary away from the real account store (#493).
-// The existing ENV_LOCK serializes construction, use, and restoration.
-struct IsolatedAccounts {
-    path: PathBuf,
-    prior: Option<std::ffi::OsString>,
-}
-
-impl IsolatedAccounts {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("shunt-ws-accounts-{}-{nonce}", std::process::id()));
-        fs::create_dir(&path).unwrap();
-        let prior = std::env::var_os("SHUNT_CODEX_ACCOUNTS_DIR");
-        std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", &path);
-        Self { path, prior }
-    }
-}
-
-impl Drop for IsolatedAccounts {
-    fn drop(&mut self) {
-        match &self.prior {
-            Some(value) => std::env::set_var("SHUNT_CODEX_ACCOUNTS_DIR", value),
-            None => std::env::remove_var("SHUNT_CODEX_ACCOUNTS_DIR"),
-        }
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+mod common;
 
 struct TestGateway {
     base_url: String,
@@ -183,9 +146,47 @@ fn write_stale_pool_state(path: &std::path::Path, account_id: &str) {
     fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
 }
 
+/// Point `SHUNT_CODEX_ACCOUNTS_DIR` at a fresh empty dir for the test's
+/// lifetime, through the caller's guard: a host with real shunt-managed codex
+/// accounts (`~/.shunt/accounts/codex`) must not leak them into the unpooled
+/// tests' credential resolution. The guard deletes the dir on drop.
+struct EmptyAccountsDir(std::path::PathBuf);
+
+impl Drop for EmptyAccountsDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn pin_empty_accounts_dir(vars: &mut common::EnvVars) -> EmptyAccountsDir {
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-ws-accounts-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    EmptyAccountsDir(dir)
+}
+
+/// The guard removes its directory when it drops: the suite must not
+/// accumulate empty account dirs in the system temp dir.
+#[tokio::test]
+async fn empty_accounts_dir_guard_removes_its_dir_on_drop() {
+    let mut vars = common::env_lock().await;
+    let guard = pin_empty_accounts_dir(&mut vars);
+    let dir = guard.0.clone();
+    assert!(dir.is_dir(), "dir exists while the guard lives");
+    drop(guard);
+    assert!(!dir.exists(), "dir is removed when the guard drops");
+}
+
 /// Write a codex-style `auth.json` a valid ChatGPT credential can be read from,
 /// and point `CODEX_AUTH_FILE` at it. Returns the path for cleanup.
-fn write_fake_codex_auth() -> PathBuf {
+fn write_fake_codex_auth(vars: &mut common::EnvVars) -> PathBuf {
     let unique_name = format!(
         "shunt-ws-fallback-auth-{}-{}.json",
         std::process::id(),
@@ -208,7 +209,10 @@ fn write_fake_codex_auth() -> PathBuf {
         }
     });
     std::fs::write(&path, serde_json::to_vec(&auth).unwrap()).unwrap();
-    std::env::set_var("CODEX_AUTH_FILE", &path);
+    // Through the caller's guard, not `set_var` directly: the variable has to be
+    // removed when the test ends however it ends, and the write has to happen
+    // under the same lock the caller is holding (issue #539).
+    vars.set("CODEX_AUTH_FILE", &path);
     path
 }
 
@@ -252,8 +256,8 @@ async fn websocket_handshake_failure_falls_back_to_http() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     // Upstream speaks only HTTP: it serves the Responses POST but has no websocket
     // endpoint, so the codex ws handshake (a GET upgrade) 404s and must fall back.
@@ -264,7 +268,7 @@ async fn websocket_handshake_failure_falls_back_to_http() {
         .mount(&upstream)
         .await;
 
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
 
     let mut config = Config::default();
     {
@@ -315,7 +319,6 @@ async fn websocket_handshake_failure_falls_back_to_http() {
         "the HTTP Responses endpoint was called by the fallback"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -324,8 +327,8 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     // Streaming variant of the fallback: codex defaults to count_tokens = tiktoken,
     // so forward() builds an input-token estimate. The ws attempt fails (HTTP-only
@@ -342,7 +345,7 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
         .mount(&upstream)
         .await;
 
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
 
     let mut config = Config::default();
     {
@@ -380,7 +383,6 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
         "message_start must carry the tiktoken estimate after ws→http fallback; got:\n{sse}"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -591,11 +593,11 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::BeforeFirstEvent).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -624,7 +626,6 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         "the fallback POSTs the turn to the HTTP endpoint exactly once (no double-send)"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -637,11 +638,11 @@ async fn websocket_rate_limits_event_records_account_quota() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::CompleteTurn).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -683,7 +684,6 @@ async fn websocket_rate_limits_event_records_account_quota() {
         "the in-stream rate-limit event feeds the account pool"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -696,11 +696,11 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -737,7 +737,6 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
         "no HTTP fallback POST is made after streaming has begun"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -746,15 +745,15 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let total_hits = Arc::new(AtomicUsize::new(0));
     let (base_url, http_hits) =
         spawn_counted_dual_upstream(WsDrop::AfterFirstEvent, total_hits.clone()).await;
     let token = fake_jwt(4_000_000_000);
-    std::env::set_var("SHUNT_WS_POOL_TOKEN_A", &token);
-    std::env::set_var("SHUNT_WS_POOL_TOKEN_B", &token);
+    vars.set("SHUNT_WS_POOL_TOKEN_A", &token);
+    vars.set("SHUNT_WS_POOL_TOKEN_B", &token);
     let gateway = start_gateway_with(pooled_codex_ws_config(
         base_url,
         ["SHUNT_WS_POOL_TOKEN_A", "SHUNT_WS_POOL_TOKEN_B"],
@@ -778,9 +777,6 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
         1,
         "only the first account's websocket may be attempted"
     );
-
-    std::env::remove_var("SHUNT_WS_POOL_TOKEN_A");
-    std::env::remove_var("SHUNT_WS_POOL_TOKEN_B");
 }
 
 #[tokio::test]
@@ -793,13 +789,13 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let token_a = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-a");
     let token_b = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-b");
-    std::env::set_var("SHUNT_WS_REPROBE_TOKEN_A", &token_a);
-    std::env::set_var("SHUNT_WS_REPROBE_TOKEN_B", &token_b);
+    vars.set("SHUNT_WS_REPROBE_TOKEN_A", &token_a);
+    vars.set("SHUNT_WS_REPROBE_TOKEN_B", &token_b);
 
     let state_dir = std::env::temp_dir().join(format!(
         "shunt-ws-reprobe-state-{}-{}",
@@ -860,8 +856,6 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
         "WebSocket selection and its HTTP fallback must not record a probe: {logs}"
     );
 
-    std::env::remove_var("SHUNT_WS_REPROBE_TOKEN_A");
-    std::env::remove_var("SHUNT_WS_REPROBE_TOKEN_B");
     fs::remove_dir_all(state_dir).ok();
 }
 
@@ -875,11 +869,11 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
-    let _accounts = IsolatedAccounts::new();
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -903,6 +897,5 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
         "no HTTP fallback POST is made once the turn has committed to the websocket"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }

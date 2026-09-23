@@ -1,6 +1,6 @@
 ---
 name: gpt-6-luna
-description: General-purpose agent that runs on GPT-6-Luna (routed through the shunt gateway to the ChatGPT/Codex subscription). Luna is balanced — its native reasoning effort is medium, tunable up to max (Luna does not support the ultra level). Use when you want a task handled by GPT-6-Luna instead of the default Claude model.
+description: General-purpose agent that runs on GPT-6-Luna (routed through the shunt gateway to the ChatGPT/Codex subscription). Luna is fast and affordable — its native reasoning effort is medium, tunable up to max (Luna does not support the ultra level). Use when you want a task handled by GPT-6-Luna instead of the default Claude model.
 model: gpt-6-luna
 ---
 

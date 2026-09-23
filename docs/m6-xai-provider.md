@@ -180,7 +180,8 @@ reject it.
 
 ## 9. Models (reference only — not hardcoded)
 
-`grok-4.7` (current frontier, 500k context) and `grok-build-0.1` (flagship coding). Pick a slug via a
+`grok-4.6` (current frontier), `grok-4.5`, `grok-build-0.1` (flagship coding), `grok-4.3`,
+`grok-4.20-0309-reasoning` / `-non-reasoning`, `grok-4.20-multi-agent-0309`. Pick a slug via a
 `[[routes]]` entry or `ANTHROPIC_CUSTOM_MODEL_OPTION`; shunt passes it through.
 
 ## 10. Open questions
