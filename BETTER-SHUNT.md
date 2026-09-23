@@ -20,6 +20,10 @@ Changes are deliberately pinned instead of deploying upstream main automatically
 - Native Responses `tool_search` for the exact `gpt-6-astra`, `gpt-6-sol` and
   `gpt-6-luna` slugs, matching `supports_search_tool` in the Codex catalog.
 - Discovery snapshot includes `claude-opus-5-5`.
+- Company model policy for fork-owned guidance: no Grok subagent plugin, Grok setup
+  guides or Grok example routes, and no `gpt-5.6-sol`/`gpt-5.6-luna` examples or agents.
+  Codex examples use `gpt-6-sol` and `gpt-6-luna`. Upstream xAI/Grok provider code,
+  its compiled blueprints and its reference tables remain unchanged.
 
 ## Upstream issue audit — 2026-09-12
 

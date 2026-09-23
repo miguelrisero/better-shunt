@@ -113,9 +113,9 @@ ChatGPT 账户),`codex` OAuth 路径将找不到 token 并报错。该密钥反�
 
 ```toml
 [[routes]]
-model = "gpt-5.6-sol"        # Claude Code 发送的 id(见下方 §4)
+model = "gpt-6-sol"        # Claude Code 发送的 id(见下方 §4)
 provider = "codex"
-# upstream_model = "gpt-5.6-sol"   # 可选:向上游转发一个不同的 slug
+# upstream_model = "gpt-6-sol"   # 可选:向上游转发一个不同的 slug
 # effort = "high"                  # 可选:为该路由固定力度
 ```
 
@@ -131,7 +131,7 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 它只接受你账户的**实时授权** slug。权威目录(以及每个 slug 接受的
 推理级别)是 openai/codex 的
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。
-当前 slug:`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 以及
+当前 slug:`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-terra` 以及
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`。较老的账户可能只被授权使用
 较早的那些(一个免费账户会解析到 `gpt-5.5`)。shunt 会透出后端自身的错误
 `detail`,因此错误的 slug 会返回真实原因。
@@ -159,7 +159,7 @@ shunt 通过发送固定的 Codex CLI 身份头(`originator: codex_cli_rs`、
 Claude Code 的 `/model` 选择器只认以 `claude`/`anthropic` 开头的发现 id,因此一个
 裸的 `gpt-*` id 需要两条路径之一 —— 它们以 `claude-` 前缀分界,互不重叠:
 
-| | `claude-…` 发现别名 | 非 `claude-` id(`gpt-5.6-sol`) |
+| | `claude-…` 发现别名 | 非 `claude-` id(`gpt-6-sol`) |
 | :-- | :-- | :-- |
 | 通过发现进入 `/model` 选择器 | ✅ 自动列出,多个模型 | ❌ 被 Claude Code 丢弃 |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ 不生效 | ✅ 加入选择器(一个 id) |
@@ -168,7 +168,7 @@ Claude Code 的 `/model` 选择器只认以 `claude`/`anthropic` 开头的发现
 **主要路径** —— 直接把 slug 加入选择器:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 该 id 正是 shunt 路由所依据的,因此它必须通过匹配的 `[models.upstream_model]` 条目、`[[routes]]`
@@ -180,14 +180,14 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 
 一个子 agent 可以运行在 Codex slug 上,而主会话仍留在 Claude。`model:` frontmatter
 字段接受**任意字符串**(不同于 Agent/Task 工具的 `model` 参数,后者只接受
-内置别名)。要将一个**现有**子 agent 指向 `gpt-5.6-sol`,编辑其
+内置别名)。要将一个**现有**子 agent 指向 `gpt-6-sol`,编辑其
 `.claude/agents/<name>.md` 并设置 `model:`:
 
 ```markdown
 ---
 name: researcher
 description: Deep research agent.
-model: gpt-5.6-sol        # 原为:sonnet(或缺省 → 继承)
+model: gpt-6-sol        # 原为:sonnet(或缺省 → 继承)
 ---
 
 <the agent's system prompt — unchanged>
@@ -195,7 +195,7 @@ model: gpt-5.6-sol        # 原为:sonnet(或缺省 → 继承)
 
 生成它时**不带** `model` 覆盖(工具参数优先于 frontmatter)。解析顺序:
 `CLAUDE_CODE_SUBAGENT_MODEL` > 工具 `model` > frontmatter > `inherit`。要强制**每个**子 agent
-都用同一个 slug,设置 `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-5.6-sol"`。
+都用同一个 slug,设置 `export CLAUDE_CODE_SUBAGENT_MODEL="gpt-6-sol"`。
 
 无论哪种方式,该 slug 都需要通过匹配的 `[models.upstream_model]` 条目、`[[routes]]` 或
 `[[route_prefixes]]` 规则进行显式路由,并且由于是非 `claude-`,它遵从
@@ -207,7 +207,7 @@ model: gpt-5.6-sol        # 原为:sonnet(或缺省 → 继承)
 <Aside type="tip" title="现成的 agent">
 
 **[`shunt-codex` 插件](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)**
-提供了面向 `gpt-5.6-sol` / `-terra` / `-luna` 的子 agent —— 在 `/plugin marketplace add pleaseai/shunt`
+提供了面向 `gpt-6-sol` / `gpt-6-luna` / `gpt-5.6-terra` 的子 agent —— 在 `/plugin marketplace add pleaseai/shunt`
 之后用 `/plugin install shunt-codex@shunt` 安装。
 
 </Aside>
@@ -226,32 +226,32 @@ model: gpt-5.6-sol        # 原为:sonnet(或缺省 → 继承)
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `sonnet` 别名 |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_FABLE_MODEL` | `opus` / `fable` 别名 |
 
-一个双层设置 —— `haiku → gpt-5.6-luna`,`sonnet → gpt-5.6-sol`:
+一个双层设置 —— `haiku → gpt-6-luna`,`sonnet → gpt-6-sol`:
 
 ```bash
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="gpt-5.6-luna"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-5.6-sol"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="gpt-6-luna"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-6-sol"
 
 # 更好看的选择器标签(_NAME/_DESCRIPTION 配套项在网关上有效)
-export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="GPT-5.6-Sol"
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="GPT-6-Sol"
 export ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION="ChatGPT/Codex Sol via shunt"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="GPT-5.6-Luna"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="GPT-6-Luna"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION="ChatGPT/Codex Luna via shunt (background tier)"
 ```
 
 ```toml
 # shunt.toml —— 两个解析后的 id 都需要一条路由
 [[routes]]
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 provider = "codex"
 
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
 ```
 
-现在在 `/model` 中选择 **Sonnet** 会通过 Codex 运行 `gpt-5.6-sol`,而每个后台/haiku 任务
-运行 `gpt-5.6-luna` —— 解析后的 id 正是 shunt 路由所依据的,因此不需要
+现在在 `/model` 中选择 **Sonnet** 会通过 Codex 运行 `gpt-6-sol`,而每个后台/haiku 任务
+运行 `gpt-6-luna` —— 解析后的 id 正是 shunt 路由所依据的,因此不需要
 `ANTHROPIC_CUSTOM_MODEL_OPTION`。
 
 
@@ -259,8 +259,8 @@ provider = "codex"
 <Aside type="note" title="把它做对">
 
 - 解析后的 id 不以 `claude-` 开头,因此为力度旋钮设置 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1`。
-  `gpt-5.6-sol` 和 `gpt-5.6-luna` **都是 372k**,因此一个全局的
-  `CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000` 同时适配两层。
+  `gpt-6-sol` 和 `gpt-6-luna` 的 Codex 目录 `context_window` **都是 272k**,因此一个全局的
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000` 同时适配两层。
 - `_SUPPORTED_CAPABILITIES` 配套项是为第三方提供方(Bedrock……)记载的,
   在网关上未确认 —— 在 shunt 上请用 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` 控制力度。
 - **haiku 层是后台“小而快”模型**(摘要、标题、快速分类)。
@@ -284,7 +284,7 @@ shunt 将其映射到 Responses 的 `reasoning.effort`,对不支持 `max` 的 sl
 
 <Aside type="note" title="自定义 id 必需">
 
-对于 Claude Code 不识别为具备力度能力的 id(如 `gpt-5.6-sol`),你必须设置:
+对于 Claude Code 不识别为具备力度能力的 id(如 `gpt-6-sol`),你必须设置:
 
 ```bash
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
@@ -301,11 +301,11 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 ## 6. 上下文窗口
 
-Claude Code 为映射的 id 将其上下文栏固定标定为 **200k**。`gpt-5.6-sol` 的真实窗口
-是 **372k**(`gpt-5.5` 是 272k),因此为一个非 `claude-` id 提高它:
+Claude Code 为映射的 id 将其上下文栏固定标定为 **200k**。`gpt-6-sol` 的 Codex 目录 `context_window`
+是 **272k**(与 `gpt-5.5` 相同),因此为一个非 `claude-` id 提高它:
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000
 ```
 
 它是**全局**的(每个会话一个值),将其设置得大于真实窗口会导致
@@ -327,7 +327,7 @@ default_provider = "anthropic"
 effort = "high"     # 可选:为所有 Codex 流量固定 high 力度
 
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"
 ```
 
@@ -338,12 +338,12 @@ codex login                                          # 一次性
 ./target/release/shunt run                           # 启动网关
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"   # 加入 /model 选择器
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"   # 加入 /model 选择器
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1            # 让力度滑块触达 Codex
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000         # gpt-5.6-sol 的真实窗口
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000         # gpt-6-sol 的 Codex 目录 context_window
 ```
 
-从 `/model` 选择 **gpt-5.6-sol**。会话中的其他一切仍原样流向 Anthropic;
+从 `/model` 选择 **gpt-6-sol**。会话中的其他一切仍原样流向 Anthropic;
 只有映射模型的推理由你的 ChatGPT/Codex 订阅应答。
 
 ## 网页搜索

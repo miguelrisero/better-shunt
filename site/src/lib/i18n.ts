@@ -41,7 +41,6 @@ export const NAVIGATION: NavigationGroup[] = [
       { label: "Anthropic", slug: "providers/anthropic" },
       { label: "OpenAI", slug: "providers/openai" },
       { label: "ChatGPT / Codex", translations: { ko: "ChatGPT / Codex", ja: "ChatGPT / Codex", "zh-cn": "ChatGPT / Codex" }, slug: "guides/codex" },
-      { label: "xAI / Grok", translations: { ko: "xAI / Grok", ja: "xAI / Grok", "zh-cn": "xAI / Grok" }, slug: "guides/xai" },
       { label: "Cursor", slug: "providers/cursor" },
       { label: "Antigravity (Google)", slug: "providers/antigravity" },
       { label: "Kimi (Moonshot)", slug: "providers/kimi" },
