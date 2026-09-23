@@ -18,7 +18,7 @@ Claude Code 的力度级别(`/effort`、`/model` 滑块、`--effort` 或 `CLAUDE
 
 <Aside type="note" title="自定义模型 id 需要一个标志">
 
-对于像 `gpt-5.6-sol` 这样的自定义网关 id,你必须设置 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` —— 否则 Claude Code 会为它不识别为具备力度能力的模型 id 省略 `output_config.effort`,而 shunt 回退到 `medium`。
+对于像 `gpt-6-sol` 这样的自定义网关 id,你必须设置 `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` —— 否则 Claude Code 会为它不识别为具备力度能力的模型 id 省略 `output_config.effort`,而 shunt 回退到 `medium`。
 
 ```bash
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1

@@ -60,6 +60,21 @@ use self::{
 /// The CLI's own default is 5 minutes, which truncates genuine multi-step
 /// agent runs and surfaces to the caller as a turn that delivered nothing.
 const PRINT_TIMEOUT: &str = "30m";
+/// Ambient Google/Gemini credentials removed from the `agy` child environment
+/// when a provider runs with its own [`profile_dir`](shunt::config::ProviderConfig).
+/// Without this the gateway host's configuration could override the profile's
+/// own sign-in, defeating the per-provider account isolation.
+const STRIPPED_ENV_KEYS: &[&str] = &[
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_QUOTA_PROJECT",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GCLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+];
 
 /// Outer cap shunt enforces itself, independent of `--print-timeout`.
 ///
@@ -106,6 +121,122 @@ pub fn terminate_all_agy_groups() {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AntigravityAdapter;
 
+/// Pump `agy`'s stdout into `translator` until its terminal event, bounding
+/// what the reply accumulates.
+///
+/// This is the non-streaming path, and it is the path every internal
+/// `[models.router]` call takes — `routing::serve` strips `stream`. The
+/// translated text is the whole body this path answers with, and the only
+/// other thing limiting it is [`HARD_TIMEOUT`]: a wall clock, not a byte
+/// count. Unbounded, a judge's CLI could therefore allocate freely for minutes
+/// instead of failing open at `judge_max_response_bytes`. `None` is the client
+/// path and never refuses.
+///
+/// Generic over the reader so the bound can be exercised without spawning a
+/// process: what this has to get right is arithmetic over the accumulated
+/// text, not anything about the pipe it arrives on.
+async fn drain_non_streaming<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    translator: &mut Translator,
+    response_byte_cap: Option<usize>,
+) -> Result<(), crate::adapters::UpstreamBodyTooLarge> {
+    let mut line = Vec::new();
+    while read_capped_line(reader, &mut line, response_byte_cap).await? {
+        // Invalid UTF-8 ends the drain, exactly as `Lines::next_line`'s
+        // `Err(InvalidData)` did before this read was bounded.
+        let Ok(text) = std::str::from_utf8(&line) else {
+            break;
+        };
+        let _ = translator.on_line(text);
+        // Checked as the text grows rather than once the drain is over:
+        // checking afterwards is checking after the memory has already been
+        // spent, which is what the bound exists to prevent.
+        if let Some(too_large) =
+            crate::adapters::over_cap(translator.text().len(), response_byte_cap)
+        {
+            return Err(too_large);
+        }
+        // Stop at the terminal event rather than reading to EOF. `agy` spawns
+        // tool descendants that inherit stdout; one holding the pipe open
+        // after the result would otherwise stall a finished turn until
+        // HARD_TIMEOUT and then report it as a failure. Checked after
+        // `on_line` regardless of what it returned: a failed result records
+        // `end` and returns nothing to emit.
+        if translator.end().is_some() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Read one newline-terminated line into `line`, refusing it the moment it
+/// passes `max_bytes`.
+///
+/// [`tokio::io::Lines`] cannot express this: `next_line` grows its `String`
+/// through the newline before it returns, so a single oversized event — one
+/// large `text_delta`, or a terminal `response` — spends the memory the judge
+/// cap exists to deny before anything can check it, and the accumulated-text
+/// check above then reports a limit that was already exceeded. It is the same
+/// reason [`drain_stderr`] reads fixed-size chunks.
+///
+/// The per-line budget is the whole cap rather than what is left of it: an
+/// event's JSON carries field names, quotes, and escapes on top of the text it
+/// contributes, so charging it against the remaining *text* budget would
+/// refuse replies that sit comfortably within the limit. Peak use is therefore
+/// about twice the cap — the line being read, plus the text kept — which is a
+/// bound, where the point is that the old path had none.
+///
+/// Returns `false` at EOF, and on a read error, which ends the drain exactly
+/// as `next_line`'s `Err` did.
+async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    max_bytes: Option<usize>,
+) -> Result<bool, crate::adapters::UpstreamBodyTooLarge> {
+    line.clear();
+    loop {
+        // `fill_buf` borrows the reader, so the consume count leaves the block
+        // rather than being applied inside it.
+        let (consumed, complete) = {
+            let available = match reader.fill_buf().await {
+                Ok(available) => available,
+                Err(_) => return Ok(false),
+            };
+            if available.is_empty() {
+                // EOF. A trailing line the child never terminated is still a
+                // line, and its bytes were charged as they were buffered.
+                return Ok(!line.is_empty());
+            }
+            match available.iter().position(|byte| *byte == b'\n') {
+                Some(index) => {
+                    // Charged before the copy, so the cap bounds the
+                    // allocation instead of reporting it afterwards.
+                    if let Some(too_large) =
+                        crate::adapters::over_cap(line.len() + index, max_bytes)
+                    {
+                        return Err(too_large);
+                    }
+                    line.extend_from_slice(&available[..index]);
+                    (index + 1, true)
+                }
+                None => {
+                    if let Some(too_large) =
+                        crate::adapters::over_cap(line.len() + available.len(), max_bytes)
+                    {
+                        return Err(too_large);
+                    }
+                    line.extend_from_slice(available);
+                    (available.len(), false)
+                }
+            }
+        };
+        reader.consume(consumed);
+        if complete {
+            return Ok(true);
+        }
+    }
+}
+
 impl Adapter for AntigravityAdapter {
     fn forward<'a>(
         &'a self,
@@ -114,6 +245,14 @@ impl Adapter for AntigravityAdapter {
         _uri: &'a Uri,
         _headers: &'a HeaderMap,
         body: RequestBody,
+        // Honoured on the non-streaming path, which is the one that
+        // accumulates a whole reply: the drain loop below feeds every `agy`
+        // line through the translator, whose text grows without bound until
+        // the terminal event. That is the branch every internal call takes,
+        // since `routing::serve` strips `stream`. A streaming turn relays its
+        // SSE frames onward and holds nothing, so its bound falls to that
+        // collector on the relayed body.
+        response_byte_cap: Option<usize>,
     ) -> AdapterFuture<'a> {
         Box::pin(async move {
             let request = body.json();
@@ -193,6 +332,16 @@ impl Adapter for AntigravityAdapter {
             // Without this the agent inherits the gateway process's directory
             // and operates on whatever tree shunt happened to be started in.
             cmd.current_dir(&workspace);
+            // Per-account isolation. `agy` resolves its whole state tree —
+            // credentials included — through `HOME`, so a private `HOME` gives
+            // each provider entry its own Google account and lets several be
+            // pooled concurrently. Verified against the real CLI: a fresh
+            // `HOME` makes it rebuild the profile and demand its own sign-in
+            // rather than reusing the ambient one.
+            if let Some(profile_dir) = state.config.provider_profile_dir(&route.provider) {
+                let profile_dir = prepare_profile_dir(profile_dir).await?;
+                apply_profile_env(&mut cmd, &profile_dir);
+            }
             cmd.stdin(Stdio::null());
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
@@ -223,7 +372,7 @@ impl Adapter for AntigravityAdapter {
 
             let message_id = format!("msg_agy_{:016x}", rand::random::<u64>());
             let mut translator = Translator::new(&route.model, message_id);
-            let mut lines = BufReader::new(stdout).lines();
+            let mut reader = BufReader::new(stdout);
 
             if is_streaming {
                 // One deadline for the whole turn, not a fresh allowance per
@@ -241,7 +390,14 @@ impl Adapter for AntigravityAdapter {
                 // its `terminate` below is the one thing that would not run.
                 let child = std::sync::Arc::new(tokio::sync::Mutex::new(child));
                 let deadline_guard = AgyChild::arm_deadline(child.clone(), deadline);
-                let stream_state = (lines, translator, child, stderr_log, false, deadline_guard);
+                let stream_state = (
+                    reader.lines(),
+                    translator,
+                    child,
+                    stderr_log,
+                    false,
+                    deadline_guard,
+                );
                 let sse_stream = futures_util::stream::unfold(
                     stream_state,
                     move |(
@@ -401,21 +557,10 @@ impl Adapter for AntigravityAdapter {
                 return Ok((StatusCode::OK, response));
             }
 
-            let drained = tokio::time::timeout(HARD_TIMEOUT, async {
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let _ = translator.on_line(&line);
-                    // Stop at the terminal event rather than reading to EOF.
-                    // `agy` spawns tool descendants that inherit stdout; one
-                    // holding the pipe open after the result would otherwise
-                    // stall a finished turn until HARD_TIMEOUT and then report
-                    // it as a failure. Checked after `on_line` regardless of
-                    // what it returned: a failed result records `end` and
-                    // returns nothing to emit.
-                    if translator.end().is_some() {
-                        break;
-                    }
-                }
-            })
+            let drained = tokio::time::timeout(
+                HARD_TIMEOUT,
+                drain_non_streaming(&mut reader, &mut translator, response_byte_cap),
+            )
             .await;
             if drained.is_err() {
                 child.terminate().await;
@@ -425,6 +570,15 @@ impl Adapter for AntigravityAdapter {
                     HARD_TIMEOUT.as_secs(),
                     stderr_log.text()
                 )));
+            }
+            // An abandoned accumulation leaves the CLI running, so it is killed
+            // here exactly as the timeout above does. Reported with the shared
+            // oversized marker rather than `agy_failure`, so `routing::serve`
+            // resolves the judge as `oversized` instead of as a failed upstream
+            // and does not advance the failover chain onto another provider.
+            if let Ok(Err(too_large)) = drained {
+                child.terminate().await;
+                return Err(crate::adapters::too_large_error(too_large));
             }
             // The loop above stops at the terminal result, so the common way
             // here is with the pipe still open and the child still alive; the
@@ -717,6 +871,53 @@ pub fn truncate(text: &str, limit: usize) -> String {
     text[..end].to_string()
 }
 
+/// Point the child at `profile_dir` and strip the ambient Google credentials.
+///
+/// Both halves are needed for the account to be the configured one: `HOME`
+/// selects the profile `agy` reads, and the stripped variables are the ones
+/// that would otherwise override that profile's sign-in — letting the gateway
+/// host's own configuration decide which account, and whose billing, serves a
+/// request. Applied only when a profile is configured; without one the child
+/// inherits the gateway environment unchanged, which is the previous behavior.
+fn apply_profile_env(cmd: &mut Command, profile_dir: &Path) {
+    cmd.env("HOME", profile_dir);
+    // Windows resolves the home directory through USERPROFILE.
+    cmd.env("USERPROFILE", profile_dir);
+    for key in STRIPPED_ENV_KEYS {
+        cmd.env_remove(key);
+    }
+}
+
+/// Create `profile_dir` if needed and resolve it to an absolute path.
+///
+/// Absolute is load-bearing, not tidiness. The child's working directory is
+/// already the request workspace by the time it reads `HOME`, so a relative
+/// value is resolved against two different bases: `create_dir_all` makes it
+/// under the gateway's directory, and `agy` then looks for it under the
+/// workspace. The profile the operator signed into is not the one the CLI
+/// reads, which defeats the isolation and can scatter credential state through
+/// a project tree. `resolve_workspace` canonicalizes for the same reason — the
+/// same value becoming both `--add-dir` and `current_dir`.
+///
+/// Canonicalizing also folds in the existence check and resolves `..` and
+/// symlinks, so the directory handed to the child is the one that was created.
+async fn prepare_profile_dir(profile_dir: &str) -> Result<PathBuf, AdapterError> {
+    tokio::fs::create_dir_all(profile_dir)
+        .await
+        .map_err(|err| {
+            adapter_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not create the Antigravity profile directory {profile_dir}: {err}"),
+            )
+        })?;
+    tokio::fs::canonicalize(profile_dir).await.map_err(|err| {
+        adapter_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not resolve the Antigravity profile directory {profile_dir}: {err}"),
+        )
+    })
+}
+
 /// Directory `agy` is launched in and granted via `--add-dir`.
 ///
 /// This is a trust boundary, not a convenience. `agy` runs with
@@ -924,6 +1125,206 @@ fn find_agy_binary_uncached() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::UpstreamBodyTooLarge;
+
+    /// One `agy` stdout line carrying assistant text.
+    fn delta_line(text: &str) -> String {
+        json!({"event": "step_update", "step_update": {"text_delta": text}}).to_string()
+    }
+
+    /// Drive the drain over a fixed stdout transcript, as the adapter does.
+    async fn drain(
+        transcript: &str,
+        cap: Option<usize>,
+    ) -> (Translator, Option<UpstreamBodyTooLarge>) {
+        let mut translator = Translator::new("agy-test-model", "msg_test");
+        let mut reader = BufReader::new(transcript.as_bytes());
+        let outcome = drain_non_streaming(&mut reader, &mut translator, cap).await;
+        (translator, outcome.err())
+    }
+
+    /// A transcript whose deltas are each under the cap and only cross it in
+    /// sum, so a per-line check could not pass this for the wrong reason.
+    fn oversized_transcript() -> String {
+        let mut transcript = String::new();
+        for _ in 0..8 {
+            transcript.push_str(&delta_line(&"W".repeat(400)));
+            transcript.push('\n');
+        }
+        transcript.push_str(&json!({"event": "result", "status": "SUCCESS"}).to_string());
+        transcript.push('\n');
+        transcript
+    }
+
+    /// The non-streaming drain is bounded on an internal call.
+    ///
+    /// This is the branch every judge call takes — `routing::serve` strips
+    /// `stream`, and the adapter reads `is_streaming` defaulting to false — and
+    /// the translator accumulates the whole reply before `to_message` embeds
+    /// it, so the cap has to bite here: the only other limit on the path is
+    /// `HARD_TIMEOUT`, a wall clock rather than a byte count.
+    #[tokio::test]
+    async fn an_oversized_non_streaming_drain_is_refused_on_a_bounded_call() {
+        let (translator, refusal) = drain(&oversized_transcript(), Some(1024)).await;
+
+        let too_large = refusal.expect("a reply past the cap is refused");
+        assert_eq!(too_large.max_bytes, 1024);
+        assert!(
+            translator.text().len() < 3200,
+            "the drain must stop at the bound rather than accumulate the whole \
+             reply and report afterwards; held {} bytes",
+            translator.text().len()
+        );
+
+        // The refusal the adapter builds from it must be the shape
+        // `routing::serve` resolves as `oversized` rather than as a failed
+        // upstream, and must not advance the failover chain.
+        let error = crate::adapters::too_large_error(too_large);
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<UpstreamBodyTooLarge>()
+                .is_some(),
+            "the refusal must carry the marker `routing::serve` reads back"
+        );
+        assert!(error.failure.is_none(), "got {:?}", error.failure);
+    }
+
+    /// A single event larger than the cap is refused *while it is read*, not
+    /// after it has been buffered and handed to the translator.
+    ///
+    /// `oversized_transcript` above only crosses the cap in sum, so it passes
+    /// even when one line may allocate without bound — which is exactly the
+    /// hole this covers. Non-vacuity lives in the `text()` assertion, not in
+    /// the refusal: restore the `Lines::next_line` read and a refusal is still
+    /// returned (the accumulated-text check catches it one step later), but
+    /// the whole 4 KiB line has been copied and translated by then, so
+    /// `text()` comes back holding it and this goes red.
+    #[tokio::test]
+    async fn a_single_oversized_event_is_refused_before_it_is_translated() {
+        let mut transcript = delta_line(&"W".repeat(4096));
+        transcript.push('\n');
+
+        let (translator, refusal) = drain(&transcript, Some(1024)).await;
+
+        let too_large = refusal.expect("a single event past the cap is refused");
+        assert_eq!(too_large.max_bytes, 1024);
+        assert!(
+            translator.text().is_empty(),
+            "the event must be refused before `on_line` copies it; held {} bytes",
+            translator.text().len()
+        );
+    }
+
+    /// The same transcript with no cap is the client path, and it is
+    /// unchanged. Without this, the assertion above would also pass if the
+    /// drain were refused unconditionally.
+    #[tokio::test]
+    async fn an_unbounded_non_streaming_drain_still_carries_the_whole_reply() {
+        let (translator, refusal) = drain(&oversized_transcript(), None).await;
+
+        assert!(refusal.is_none(), "the client path never refuses");
+        assert_eq!(
+            translator.text().len(),
+            3200,
+            "the client path is byte for byte what it was"
+        );
+        assert!(matches!(translator.end(), Some(AgyEnd::Success)));
+    }
+
+    /// A relative `profile_dir` must never reach the child. The child reads
+    /// `HOME` after its working directory has already moved to the request
+    /// workspace, so the gateway and the CLI would resolve the same string
+    /// against different bases and the profile the operator signed into would
+    /// not be the one `agy` opens. `src` already exists in the crate root, so
+    /// this resolves a relative path without creating anything.
+    #[tokio::test]
+    async fn relative_profile_dir_resolves_to_an_absolute_path() {
+        let resolved = prepare_profile_dir("src")
+            .await
+            .expect("an existing relative directory resolves");
+
+        assert!(
+            resolved.is_absolute(),
+            "a relative profile dir must not reach the child: {resolved:?}"
+        );
+        assert!(resolved.ends_with("src"), "{resolved:?}");
+    }
+
+    /// Canonicalizing is what makes the created directory and the child's
+    /// `HOME` the same directory, so `..` must be folded rather than passed on.
+    #[tokio::test]
+    async fn profile_dir_is_normalized_before_the_child_sees_it() {
+        let base = std::env::temp_dir().join(format!("shunt-profile-{}", std::process::id()));
+        let target = base.join("account-a");
+        std::fs::create_dir_all(&target).expect("fixture dir");
+        let detour = base.join("account-a/../account-a");
+
+        let resolved = prepare_profile_dir(&detour.to_string_lossy())
+            .await
+            .expect("profile dir resolves");
+
+        assert_eq!(resolved, target.canonicalize().expect("canonical fixture"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The directory is created on demand, so a first run against a fresh
+    /// profile path does not fail before `agy` can be asked to sign in.
+    #[tokio::test]
+    async fn missing_profile_dir_is_created() {
+        let dir = std::env::temp_dir().join(format!("shunt-profile-new-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let resolved = prepare_profile_dir(&dir.to_string_lossy())
+            .await
+            .expect("a missing profile dir is created");
+
+        assert!(resolved.is_dir());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profile_env_sets_home_and_strips_ambient_credentials() {
+        let profile = Path::new("/tmp/shunt-profile-fixture");
+        let mut cmd = Command::new("true");
+
+        apply_profile_env(&mut cmd, profile);
+
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        for key in ["HOME", "USERPROFILE"] {
+            let (_, value) = envs
+                .iter()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .unwrap_or_else(|| panic!("{key} should be set"));
+            assert_eq!(
+                *value,
+                Some(profile.as_os_str()),
+                "{key} should point at the profile"
+            );
+        }
+        assert!(!STRIPPED_ENV_KEYS.is_empty());
+        for key in STRIPPED_ENV_KEYS {
+            let (_, value) = envs
+                .iter()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .unwrap_or_else(|| panic!("{key} should be removed from the child"));
+            assert!(value.is_none(), "{key} should be removed, not overwritten");
+        }
+    }
+
+    /// Stripping is conditional on a configured profile. With none, the child
+    /// inherits the gateway environment exactly as it did before this setting
+    /// existed — moving the strip loop out of that branch would break every
+    /// deployment that relies on ambient Google credentials.
+    #[test]
+    fn without_a_profile_no_environment_is_overridden() {
+        let cmd = Command::new("true");
+
+        let overrides: Vec<_> = cmd.as_std().get_envs().collect();
+
+        assert!(overrides.is_empty(), "unexpected overrides: {overrides:?}");
+    }
 
     fn status_of(error: &AdapterError) -> StatusCode {
         error.response.status()

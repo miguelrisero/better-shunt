@@ -1,8 +1,7 @@
 # shunt-codex
 
 Claude Code subagents that run on ChatGPT/Codex models — **GPT-6-Sol**,
-**GPT-6-Luna**, and **GPT-5.6-Terra** — routed through the [shunt](https://github.com/pleaseai/shunt)
-gateway.
+**GPT-6-Luna**, and **GPT-5.6-Terra** — routed through the [shunt](https://github.com/pleaseai/shunt) gateway.
 
 Unlike a CLI hand-off (which drops persona and preloaded skills), shunt diverts
 only *token generation* at the inference layer. The session keeps running inside
@@ -14,17 +13,20 @@ Only the model that generates the tokens changes.
 | Agent (`@`-mention)         | Model id (`model:`) | Native effort | Supported effort levels                     |
 | --------------------------- | ------------------- | ------------- | ------------------------------------------- |
 | `shunt-codex:gpt-6-sol`     | `gpt-6-sol`         | medium        | low · medium · high · xhigh · max · ultra   |
-| `shunt-codex:gpt-5.6-terra` | `gpt-5.6-terra`     | medium        | low · medium · high · xhigh · max · ultra   |
 | `shunt-codex:gpt-6-luna`    | `gpt-6-luna`        | medium        | low · medium · high · xhigh · max           |
+| `shunt-codex:gpt-5.6-terra` | `gpt-5.6-terra`     | medium        | low · medium · high · xhigh · max · ultra   |
 
 Each agent's `model:` frontmatter pins the request to a Codex slug, so only that
-subagent diverts — the main session stays on Claude. Context windows are listed
-per slug in `models.json`.
+subagent diverts — the main session stays on Claude. GPT-6-Sol is the workhorse for coding and
+everyday work; GPT-6-Luna is the fast, affordable tier for easier tasks. The
+`gpt-6-*` slugs need a Codex client of at least 0.155.0 — shunt advertises one
+for you (see [Prerequisites](#prerequisites)).
 
 > **Effort levels are from openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).**
-> Note the difference: **Luna does not support the `ultra` level** — its top level
-> is `max`. Sending `ultra` to Luna (via shunt's `effort` config or an `effort:`
-> override) is rejected upstream. Sol and Terra accept `ultra`.
+> Note the difference: **Luna (`gpt-6-luna`) does not
+> support the `ultra` level** — its top level is `max`. Sending `ultra` to Luna
+> (via shunt's `effort` config or an `effort:` override) is rejected upstream. Sol
+> and Terra accept `ultra`.
 
 > The agents' system prompts are written for **Claude Code's harness** — these
 > models run inside Claude Code's tool loop (Read/Edit/Bash, skills), not Codex's.
@@ -57,26 +59,29 @@ and is configured to route the model ids above to the Codex provider:
    provider = "codex"
 
    [[routes]]
-   model = "gpt-5.6-terra"
+   model = "gpt-6-luna"
    provider = "codex"
 
    [[routes]]
-   model = "gpt-6-luna"
+   model = "gpt-5.6-terra"
    provider = "codex"
    ```
 
    For the full setup — auth-file handling, effort, context-window sizing, and
    troubleshooting — see the **Codex configuration reference**
-   ([site guide](https://shunt.dev/guides/codex/) ·
+   ([site guide](https://shunt.sh/guides/codex/) ·
    [`docs/codex-configuration.md`](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
 
 > The ChatGPT-account backend only accepts the slugs your account is entitled to.
-> The latest are `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna`; older accounts
-> may only have `gpt-5.6-*` / `gpt-5.5` / `gpt-5.4` / `gpt-5.2`. The canonical catalog is
+> The latest are `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna`, followed by
+> `gpt-5.6-terra`; older accounts may only have
+> `gpt-5.5` / `gpt-5.4` / `gpt-5.2`. The `gpt-6-*` slugs require a Codex client of
+> at least 0.155.0; shunt's pinned client identity (`codex_cli_rs/0.156.0`)
+> satisfies that. The canonical catalog is
 > openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 
 Without a running shunt gateway mapping these ids, Claude Code will send the
-`gpt-*` model id straight to Anthropic and the request will fail.
+`gpt-6-*` or `gpt-5.6-*` model id straight to Anthropic and the request will fail.
 
 ## Install
 
@@ -99,11 +104,11 @@ see [Prerequisites](#prerequisites). Without it the request fails against Anthro
 
 ## Further reading
 
-- [Codex configuration reference](https://shunt.dev/guides/codex/) — the
+- [Codex configuration reference](https://shunt.sh/guides/codex/) — the
   full end-to-end setup ([Markdown source](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
-- [Effort & Context](https://shunt.dev/guides/effort-and-context/) — reasoning
+- [Effort & Context](https://shunt.sh/guides/effort-and-context/) — reasoning
   effort, `count_tokens`, and the 372k context window in depth.
-- [Model Discovery](https://shunt.dev/guides/model-discovery/) — auto-list
+- [Model Discovery](https://shunt.sh/guides/model-discovery/) — auto-list
   Codex models in the `/model` picker via a `claude-`-named alias.
 - [ChatGPT / Codex auth spec](https://github.com/pleaseai/shunt/blob/main/docs/m2-chatgpt-oauth.md)
   — how shunt reads and refreshes `~/.codex/auth.json`.

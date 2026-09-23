@@ -13,6 +13,9 @@ env:
   RUSTFLAGS: -D warnings
   RUST_TEST_THREADS: 1
   CARGO_BUILD_JOBS: 2
+  # The --all-features debug target otherwise exhausts the runner disk while linking.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 jobs:
   test:
     name: fmt · clippy · test
@@ -27,6 +30,18 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      # `--all-features` enables `ui`, which embeds `ui/dist`.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+      - run: npm run build
+        working-directory: ui
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-features --workspace
+      # Default-feature arms that `--all-features` compiles out.
+      - run: cargo test --locked --test router_surface --test prefill_router

@@ -65,23 +65,43 @@ regenerate it.
 
 ## 4. Tools & tool_choice
 
-- **Tool:** `{ type:"function", name, description, parameters: normalize(input_schema) }`.
-  `normalize`: ensure `type:"object"`, ensure `properties:{}`, drop non-array `required`,
+- **Function tool:** `{ type:"function", name, description, strict:false,
+  parameters: normalize(input_schema) }`.
+  `strict` is pinned off so the source schema's optional properties survive. A tool entry that
+  omits the field is normalized toward strict mode upstream, where a closed parameter object
+  (`additionalProperties:false`) behaves as if every property were required. Measured
+  2026-09-08 against `gpt-5.6-sol`, 10 forced calls per case with one required and one optional
+  string property: the closed object without `strict` returned the optional property (as `""`)
+  10/10, and the same object with `strict:false` omitted it 10/10. A third arm sent `strict:true`
+  over a nullable-required encoding and returned it as `null` 10/10 — that arm changed flag and
+  schema together, so it is a separate observation, not a third controlled case. Claude Code's
+  built-in `Read` ships exactly the closed shape (captured 2026-09-10: `required` holds only
+  `file_path`, `additionalProperties:false`, with `offset`/`limit` integers and `pages` a
+  string), and the mechanism holds on it directly: forced calls against `gpt-5.6-luna`
+  arrived without `strict` carrying `offset:0`, `limit:2000` and `pages:""` 5/5, and with
+  `strict:false` carrying only `file_path` 5/5 (2026-09-10). On the xAI and Grok flavors the
+  field is withheld: those backends reject several standard Responses fields (`text`,
+  `service_tier`, `reasoning.summary`), and their acceptance of `strict` is unverified. The
+  tool specs
+  replayed inside a `tool_search_output` carry the same `strict:false` — measured 2026-09-10
+  against `gpt-5.6-luna`, 3 reveal turns accepted with the loaded tool called without its
+  optional property. Native client-executed
+  `tool_search` omits it: that tool kind rejects the field outright (`400 Unknown parameter:
+  'tools[0].strict'`, measured 2026-09-10 against `gpt-5.6-luna`), and its own schema has no
+  optional properties (captured 2026-09-10: `query` and `max_results` are both required), so
+  the omission costs nothing either way.
+- `normalize`: ensure `type:"object"`, ensure `properties:{}`, drop non-array `required`,
   default `additionalProperties:true`, and drop any `pattern` (or `patternProperties` key)
   Python's `re` cannot compile — the backend validates `parameters` against the JSON Schema
   meta-schema with `format: regex` checked by Python, and one JavaScript-only regex
   (`\p{Cc}`, `(?<name>…)`, `\u{…}`, `\z`) fails the whole request with
   `Invalid schema for function '…': '…' is not a 'regex'`. Claude Code's `Artifact` tool
-  ships such a pattern. Better Shunt also requires compilation with `regex-lite`,
-  rejecting lookaround (including Neon's email pattern), backreferences and malformed
-  expressions missed by the Python approximation. This is a conservative filter, not
-  a complete emulation of provider validators. Ordinary patterns and schema data such
-  as defaults remain intact; tool-side validation still enforces constraints.
-  The inbound Responses-to-Chat translator uses the same filter (#489).
-  OpenAI/ChatGPT function tools explicitly use `strict:false` so optional arguments
-  stay optional; xAI/Grok keep their existing strict-field behavior. Both eager and
-  native ToolSearch-loaded schemas use this policy. Empty arrays and null argument
-  values are never deleted globally (#450).
+  ships such a pattern. Lookaheads and everything else Python accepts are kept, the one deliberate
+  exception being `\N{…}`, which names a character in Python but is a literal `N` in
+  JavaScript — the engines disagree on its meaning, so it is dropped rather than
+  forwarded. Outside strict
+  mode a dropped `pattern` is an advisory hint lost, not a capability
+  (`src/model/responses_schema.rs`).
 - **tool_choice map:** `auto→"auto"`, `none→"none"`, `any→"required"`,
   `tool{name}→{type:"function",name}`. If absent but tools present → `"auto"`; if no tools →
   omit.
@@ -205,6 +225,66 @@ instruction on how the agent should proceed. Claude Code surfaces only the error
 `map_error_value` appends the steer to it (`{message}\n\n{steer}`). The sibling
 `detailed_explanation` / `error_type` fields are not forwarded — upstream treats them as
 sensitive and never persists them.
+
+## 8b. Emulated `stop_sequences` (issue #605)
+
+The Responses API has **no `stop` parameter** — Chat Completions does, Responses does not — so a
+client's Anthropic `stop_sequences` cannot be forwarded. Before #605 the field was simply never
+read, and every Responses upstream silently ignored it; Claude Code's auto-mode permission
+classifier sends `stop_sequences: ["</block>"]` / `["</severity>"]` and the trailing text past the
+stop broke its parser, costing a retry per classification.
+
+shunt emulates them inside the translation instead. `forward` reads the field once
+(`adapters/responses/mod.rs`), threads it through `TurnOptions` → `RelayOptions` →
+`AnthropicSseMachine::with_stop_sequences`, and **never** adds it to the upstream body.
+
+**Scanner** (`model/stop_sequences.rs`). Assistant text deltas only — reasoning summaries
+(`response.reasoning_summary_text.delta`) and tool-call arguments
+(`response.function_call_arguments.delta`) are never scanned, so a stop string inside a thinking
+block or a tool argument cannot end the turn. Each text delta is appended to a holdback, which is
+searched for the earliest occurrence of any stop sequence (earliest start byte wins; ties break by
+the client's order). Without a match, everything but the longest holdback suffix that is a *proper*
+prefix of some stop sequence is emitted immediately — so at most `max_len - 1` bytes are ever
+buffered and streaming is preserved, while a stop split across two deltas is still caught. Slicing
+only happens on `char` boundaries, so a multi-byte code point is never split.
+
+**Termination.** On a match the machine emits the text before it, closes the open block, and sends
+`message_delta` with `stop_reason: "stop_sequence"` and `stop_sequence: "<matched>"`, then
+`message_stop`; `stopped` makes every later event — `response.completed` included — a no-op. Text
+after the stop is neither streamed nor accumulated, so the non-streaming `final_json`
+reconstruction is truncated at exactly the same point and reports the same `stop_reason` /
+`stop_sequence`. A held-back prefix that never completes is ordinary output: `close_any` flushes it
+as a normal `text_delta` before the block's `content_block_stop`, on every path that closes a text
+block.
+
+**Abort.** Every transport but one drops the upstream the moment the stop fires: `sse_parse.rs`
+drops the `reqwest` byte stream with the final chunk (streaming HTTP), and `ws_stream.rs` drops
+the `CodexWsEvents` receiver (both websocket paths), which makes the codex_ws reader abandon the
+turn and evict the socket — correct, since a half-consumed turn must not be pooled. The exception
+is non-streaming HTTP: `json_response` reads the whole body with `upstream.text()` before the
+machine sees an event, so it truncates at the match like every other path but cannot cut the
+upstream short. That is the pre-existing shape of the non-streaming relay, not something the stop
+emulation introduced.
+
+Each transport keys the abort on the stop sequence specifically rather than on "the machine is
+stopped": on a *normally* completed turn the upstream is not mid-turn, and aborting it there would
+evict a healthy pooled socket (websocket) or close a connection reqwest could otherwise return to
+its idle pool (HTTP). So an ordinary terminal — `response.completed` / `response.done` /
+`response.incomplete`, or a backend error event — leaves the upstream to finish; on streaming HTTP
+the rest of the body goes to `spawn_terminal_drain`, a detached read bounded by
+`TERMINAL_DRAIN_BUDGET`, so the connection still returns to the idle pool. The trailing bytes
+translate to nothing, since `stopped` already makes every later event a no-op.
+
+**Usage caveat.** The stop makes every later event a no-op, so the upstream's `response.completed`
+usage is never applied — on the aborting transports it never arrives, and on non-streaming HTTP it
+is read but discarded. `usage_value`'s existing estimate substitution applies instead, so the turn
+reports the local input estimate and `output_tokens: 0`: in `message_delta.usage` when streaming,
+in the final JSON's `usage` when not. A non-streaming turn emits no `message_start` and normally
+skips the estimate altogether, so `forward` widens its gate to cover a request carrying
+`stop_sequences` — otherwise a stopped turn would report `input_tokens: 0` for a non-empty prompt.
+The estimate stays subject to the same `count_tokens = "tiktoken"` opt-in as every other path.
+Tokens the upstream generated between the match and the abort are still billed upstream —
+negligible for the short completions stop sequences are used for.
 
 ## 9. Test targets (M1)
 

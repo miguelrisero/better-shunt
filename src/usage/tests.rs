@@ -361,6 +361,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![claude_account.clone()],
             account_scope: Vec::new(),
@@ -370,6 +371,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 
@@ -451,7 +453,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
 /// `GET /usage` must cover a `kimi_oauth` pool, not just Claude and Codex.
 /// The handler filters providers by auth mode before resolving accounts, and
 /// that filter is an explicit enumeration — the same shape that had already
-/// dropped Kimi from `providers.accounts` validation and from `/admin/pool`.
+/// dropped Kimi from `providers.accounts` validation and from `/admin/api/pool`.
 ///
 /// Kimi is seeded *less* utilized than the codex account, so Kimi is the one
 /// that shifts the reported headroom: codex at 0.25 and Kimi at 0.10 average
@@ -504,6 +506,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![kimi_account.clone()],
             account_scope: Vec::new(),
@@ -513,6 +516,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 

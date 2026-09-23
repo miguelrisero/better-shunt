@@ -42,7 +42,7 @@ fn translate(request: &Value, native: bool) -> Value {
         effort: None,
         service_tier: None,
     };
-    translate_request_value(request, &route, ResponsesFlavor::Chatgpt, native)
+    translate_request_value(request, &route, ResponsesFlavor::Chatgpt, native, None)
 }
 
 #[test]
