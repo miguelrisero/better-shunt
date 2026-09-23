@@ -7,7 +7,7 @@ description: よくある shunt のエラーとその修正方法。
 | :-- | :-- |
 | `ChatGPT auth not found; run codex login` | shunt が `~/.codex/auth.json` を読めない。`codex login` を実行。 |
 | マッピングされたモデルで `authentication_error` | プロバイダー認証情報が期限切れ／不在 — `codex login` を再実行するか `OPENAI_API_KEY` をエクスポート。shunt はバックエンドの本当の `detail` メッセージを表面化します。 |
-| `400 … model is not supported when using Codex with a ChatGPT account` | `-codex` スラッグ（またはアカウントが entitle されていないもの）を使った。[models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) の entitle されたスラッグ（例 `gpt-5.6-sol`、`gpt-5.5`）を使うか `upstream_model` を設定。 |
+| `400 … model is not supported when using Codex with a ChatGPT account` | `-codex` スラッグ（またはアカウントが entitle されていないもの）を使った。[models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json) の entitle されたスラッグ（例 `gpt-6-sol`、`gpt-5.5`）を使うか `upstream_model` を設定。 |
 | `/model` にモデルが表示されない | `gpt-*` id には `ANTHROPIC_CUSTOM_MODEL_OPTION` を使う。[discovery](/ja/guides/model-discovery/) は `claude`/`anthropic` プレフィックスの id のみを表面化します。 |
 | `opus` で Opus 4.7／`sonnet` で Sonnet 4.6 が選択される | Claude Code の組み込みエイリアステーブルでは、gateway セッション用にこれらの tier が固定されています。`ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5` を使ってクライアント側で tier を固定するか、shunt で id をリマップしてください — [モデルエイリアス](/ja/guides/model-aliases/#エイリアスの解決)を参照。 |
 | Opus／Fable のコンテキストウィンドウが 200K と表示される | Claude Code は base URL が `api.anthropic.com` の場合にのみ、モデルのネイティブ 1M ウィンドウを信頼します。`opus[1m]`／`fable[1m]` を選択してください — [モデルエイリアス](/ja/guides/model-aliases/#1m-コンテキストは自動的に適用されない)を参照。 |

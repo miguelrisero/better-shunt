@@ -78,14 +78,14 @@ shunt는 `GET /v1/models`를 제공하므로 Claude Desktop은 시작할 때 모
 // (각 항목에는 "type": "model", "display_name", "created_at",
 //  "max_input_tokens", "max_tokens"도 포함됨)
 { "data": [
-  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
-  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
-  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
-  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-opus-4-1-20250805" }
+  { "id": "claude-opus-5-5" },   { "id": "claude-opus-5" },
+  { "id": "claude-sonnet-5" },   { "id": "claude-fable-5" },
+  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
+  { "id": "claude-sonnet-4-6" }, { "id": "claude-opus-4-6" },
+  { "id": "claude-opus-4-5-20251101" }, { "id": "claude-haiku-4-5-20251001" },
+  { "id": "claude-sonnet-4-5-20250929" }, { "id": "claude-opus-4-1-20250805" }
 ], "has_more": false,
-   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
+   "first_id": "claude-opus-5-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 선별된 `claude-<slug>-via-<provider>` 별칭(Claude Code에서 동작하는 패턴)은 **Claude Desktop에서 버려집니다**. [모델 디스커버리 → Claude Desktop은 tier 이름 id만 인식합니다](/ko/guides/model-discovery/#claude-desktop은-tier-이름-id만-인식합니다)를 참고하세요.
@@ -98,7 +98,7 @@ shunt는 `GET /v1/models`를 제공하므로 Claude Desktop은 시작할 때 모
   [[routes]]
   model = "claude-sonnet-5"        # Claude Desktop이 인식하는 tier 이름 id
   provider = "codex"
-  upstream_model = "gpt-5.6-sol"   # 실제 백엔드 슬러그
+  upstream_model = "gpt-6-sol"   # 실제 백엔드 슬러그
   ```
 
 - shunt가 라우팅하는 정확한 id의 명시적 `inferenceModels` 목록으로 **Desktop 측 디스커버리를 오버라이드**하세요. 모든 항목이 전체 id이면 Claude Desktop은 `/v1/models` 호출을 건너뜁니다.

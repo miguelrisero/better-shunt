@@ -17,14 +17,14 @@ Claude Code는 디스커버리된 id가 `claude`/`anthropic`으로 시작하지 
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"
+display_name = "GPT-6-Sol (via Codex)"
 
 [models.upstream_model]
-codex = "gpt-5.6-sol"
+codex = "gpt-6-sol"
 ```
 
-이 별칭을 선택하면 `codex`로 라우팅하고 업스트림에는 `gpt-5.6-sol`을 보냅니다. 이 맵은 별도의 `[[routes]]` 항목보다 권장되는 정확한 id 형식이며, `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선합니다. 항목마다 설정된 provider 하나만 지원하며, 잘못된 맵이나 같은 id의 `[[routes]]` 항목은 시작 오류입니다.
+이 별칭을 선택하면 `codex`로 라우팅하고 업스트림에는 `gpt-6-sol`을 보냅니다. 이 맵은 별도의 `[[routes]]` 항목보다 권장되는 정확한 id 형식이며, `[[routes]]`, `[[route_prefixes]]`, `server.default_provider`보다 우선합니다. 항목마다 설정된 provider 하나만 지원하며, 잘못된 맵이나 같은 id의 `[[routes]]` 항목은 시작 오류입니다.
 
 ## 별도 라우트 사용
 
@@ -32,13 +32,13 @@ codex = "gpt-5.6-sol"
 
 ```toml
 [[models]]
-id = "claude-gpt-5.6-sol-via-codex"     # 반드시 claude/anthropic으로 시작
-display_name = "GPT-5.6-Sol (via Codex)"
+id = "claude-gpt-6-sol-via-codex"     # 반드시 claude/anthropic으로 시작
+display_name = "GPT-6-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-5.6-sol-via-codex"  # Claude Code가 보내는 별칭
+model = "claude-gpt-6-sol-via-codex"  # Claude Code가 보내는 별칭
 provider = "codex"
-upstream_model = "gpt-5.6-sol"          # ChatGPT 백엔드로 전달되는 실제 슬러그
+upstream_model = "gpt-6-sol"          # ChatGPT 백엔드로 전달되는 실제 슬러그
 ```
 
 그런 다음 디스커버리를 활성화하고(Claude Code v2.1.129+) shunt와 Claude Code를 재시작하세요:
@@ -47,7 +47,7 @@ upstream_model = "gpt-5.6-sol"          # ChatGPT 백엔드로 전달되는 실�
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
 
-별칭은 `/model`에 *From gateway*로 표시됩니다. 이를 선택하면 `claude-gpt-5.6-sol-via-codex`를 보내고, shunt는 이를 `codex`로 라우팅하여 `gpt-5.6-sol`로 다시 씁니다.
+별칭은 `/model`에 *From gateway*로 표시됩니다. 이를 선택하면 `claude-gpt-6-sol-via-codex`를 보내고, shunt는 이를 `codex`로 라우팅하여 `gpt-6-sol`로 다시 씁니다.
 
 별칭이 없는 `gpt-*` id에는 대신 `ANTHROPIC_CUSTOM_MODEL_OPTION`을 사용하세요 — [Claude Code 연결](/ko/guides/connect-claude-code/#4-매핑된-모델-선택)을 참고하세요.
 
@@ -61,7 +61,7 @@ Claude Code는 `claude`/`anthropic`으로 시작하는 디스커버리 id를 모
 [[routes]]
 model = "claude-sonnet-5"        # Claude Desktop이 인식하는 tier 이름 id
 provider = "codex"
-upstream_model = "gpt-5.6-sol"   # 실제 백엔드 슬러그
+upstream_model = "gpt-6-sol"   # 실제 백엔드 슬러그
 ```
 
 Desktop에서 이를 선택하면 의도한 업스트림으로 해석됩니다. 이 route는 해당 id에 대한 내장 카탈로그의 기본 라우팅을 덮어쓰므로, 백엔드 매핑이 사용자에게 여전히 의미 있는 tier 이름을 고르세요.

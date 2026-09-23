@@ -296,7 +296,7 @@ Each entry sends one model to a different Responses-compatible upstream, instead
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `model` | *(required)* | Public model id the Codex client sends in the Responses body. Matched **exactly** and **case-sensitively** — no prefix match, no `[1m]` stripping, and no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-5.6-sol`, and `~openai/gpt-latest` route as written |
+| `model` | *(required)* | Public model id the Codex client sends in the Responses body. Matched **exactly** and **case-sensitively** — no prefix match, no `[1m]` stripping, and no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-6-sol`, and `~openai/gpt-latest` route as written |
 | `provider` | *(required)* | Configured provider that serves this model; must be `kind = "responses"` and must not use a credential-free auth mode (`passthrough` or `none`) |
 | `upstream_model` | `model` | Model id sent upstream. When it differs from `model`, shunt rewrites the body's top-level `model` and leaves every other field intact |
 

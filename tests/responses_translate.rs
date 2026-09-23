@@ -2464,11 +2464,13 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
 
 #[test]
 fn astra_production_gate_maps_tool_search_and_keeps_prefix_stable() {
-    // Codex catalog slug `gpt-6-astra` takes the native path through
+    // Codex catalog slugs `gpt-6-astra`/`-sol`/`-luna` take the native path through
     // [`Config::native_tool_search`]; close gpt-6 names and gpt-5.2 stay on
     // the #43 shim. The native request/reveal fixture is the same shape as
     // [`tool_reveal_grows_shim_tools_but_leaves_native_tools_stable`].
     assert!(production_native_for("gpt-6-astra"));
+    assert!(production_native_for("gpt-6-sol"));
+    assert!(production_native_for("gpt-6-luna"));
     assert!(production_native_for("gpt-5.6-sol"));
     assert!(production_native_for("gpt-5.4"));
     assert!(!production_native_for("gpt-6-pro"));

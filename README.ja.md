@@ -50,7 +50,7 @@ shunt は処理中のリクエストを完了させてから終了します。Un
 # shunt.toml — route a gpt-* id to your ChatGPT subscription
 # [[routes]] is legacy for exact ids; prefer [models.upstream_model].
 [[routes]]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 provider = "codex"        # reuses `codex login`; use `openai` for OPENAI_API_KEY
 ```
 
@@ -59,8 +59,8 @@ codex login                                        # provider credential
 shunt run                                           # -> listening on 127.0.0.1:3001
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
-claude                                              # /model -> pick gpt-5.6-sol
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
+claude                                              # /model -> pick gpt-6-sol
 ```
 
 マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [クイックスタート](https://shunt.dev/getting-started/quickstart/) を参照してください。
@@ -129,7 +129,7 @@ provider = "codex" # defaults to chatgpt_oauth
 id = "claude-opus-4-8"
 [models.upstream_model]
 anthropic-primary = "claude-opus-4-8"
-codex-fallback = "gpt-5.6-sol"
+codex-fallback = "gpt-6-sol"
 ```
 
 このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [設定リファレンス](https://shunt.dev/reference/configuration/) を参照してください。
@@ -296,7 +296,7 @@ Claude Code は `ANTHROPIC_BASE_URL` の背後に**ファーストクラスの�
 - [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — API 契約。エンドポイント、転送すべき／消費すべきヘッダー・ボディフィールド、機能のパススルー、アトリビューションです。稼働中のゲートウェイは `GET /protocol` で機械可読の仕様を提供します。
   - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。デフォルトでは `auto_include_builtin_models = true` により、キュレーションされた `[[models]]` エントリの後に自動検出されたモデルが id で重複排除されたうえで追加されます。厳密にキュレーションしたリストにするには `false` を設定してください。これらのモデルは、`server.default_provider` が Anthropic 系の場合にそのプロバイダーへの実際の `GET /v1/models` から取得され、そのプロバイダーの認証モードを使います。`passthrough` は呼び出し元の認証情報を転送するため、呼び出し元ごとに自身が利用可能なリストが見えます。`api_key` は設定されたキーを使います。`claude_oauth` は、推論と同じ実効アカウント集合（`account_scope` の順でストアを走査したアカウントを含む）から、解決可能で無効化されていない最初のアカウントを、プール選択・クールダウン・クォータ計上なしで使います。後者の 2 つのモードは、ゲートウェイの認証情報に紐づく共有カタログを公開します。shunt は何もキャッシュせず、デフォルトプロバイダーが Anthropic 系でない場合、認証情報がない場合、または呼び出しが失敗した場合（2 秒の上限）は、組み込みの Claude カタログのスナップショットにフォールバックします。キュレーションされたエントリには `[models.upstream_model]` マップを含めることもでき（順序付き `[[upstreams]]` では複数エントリ、レガシーな providers では 1 エントリ）、これにより公開される id が対応するアップストリーム経由でルーティング可能になり、別途 `[[routes]]` エントリを書かずに各バックエンドの id へ変換されます。**制約:** `id` が `claude`/`anthropic` で始まらないエントリは無視されます。非 Claude モデルはエイリアス化するか手動で追加する必要があります。
   - **システムプロンプトのアトリビューションブロック** — Claude Code はクライアントバージョン + 会話フィンガープリントをシステムプロンプトの先頭に付加します。これは会話のライフタイム中は安定です（v2.1.181+）。`shunt` はこれを変更せず転送します（決して除去しません。それは `CLAUDE_CODE_ATTRIBUTION_HEADER=0` による開発者の判断です）。
-- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は、組み込みエイリアスを置き換えずにゲートウェイ経由のエントリを `/model` ピッカーへ追加します。この ID は検証をスキップするため、ゲートウェイが受け入れる任意の文字列が使えます。discovery は `claude`/`anthropic` で始まらない id を無視するため、**これが非 Claude モデル（例 `gpt-5.6-sol`）を選択する主な方法**です。
+- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は、組み込みエイリアスを置き換えずにゲートウェイ経由のエントリを `/model` ピッカーへ追加します。この ID は検証をスキップするため、ゲートウェイが受け入れる任意の文字列が使えます。discovery は `claude`/`anthropic` で始まらない id を無視するため、**これが非 Claude モデル（例 `gpt-6-sol`）を選択する主な方法**です。
 - **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、`ToolSearch` ツールを通じて必要になったときに開示します。これにより、モデルが呼び出しもしないツールに費やすはずだったコンテキストを取り戻せます。shunt はファーストパーティの Anthropic ホストではないため、Claude Code は `ENABLE_TOOL_SEARCH=true` でオプトインしない限りこれを**無効**のままにします。Messages パスでは、遅延が維持されるかどうかは設定ではなくアップストリームのモデルによって決まります。`claude*` と `anthropic/*` の id ではプロトコルがバイト単位でそのまま保たれますが、非 Anthropic の id（OpenRouter のステルススラッグ、Kimi、…）では `defer_loading` マーカーと `tool_search_tool_*` エントリが除去されます。これらのホストがそれらを明確に拒否するためです（`400 Deferred custom tools are only supported on Anthropic models...`）。ツール自体は届きますが、完全なスキーマを伴って一括で届くため、それらのモデルではツール検索によるコンテキストの節約はありません。Codex/Responses パスでは、`[providers.<name>]` 配下の `tool_search` は 3 状態の設定です。未設定（デフォルトの「auto」）は、すでに実装が確認されているアップストリーム — ChatGPT/Codex バックエンドと `api.openai.com` — に限って Responses API 自身のネイティブなクライアント実行型 `tool_search` プロトコルへ対応付け、その他の OpenAI 互換エンドポイント（LiteLLM、vLLM、OpenRouter、自前のプロキシ、…）には #43 のテキストシムを使い続けます。`tool_search = true` は、アップストリームのフレーバーとモデルが条件を満たす場合（xAI/Grok 以外、gpt-5.4 以降）にネイティブを強制するため、検証済みのカスタムエンドポイントを任意でオプトインできます。`tool_search = false` は常にシムを強制し、開示された各ツールをキャッシュ済みの `tools` プレフィックスへ追加して、開示のたびにそれを無効化します。[ツール検索](https://shunt.dev/ja/guides/codex/#tool-search)ガイドを参照してください。
 
 **設計原則:** 仕様準拠の Anthropic Messages ゲートウェイ（`/v1/messages`、`/v1/models`、正しいヘッダー／アトリビューションのパススルー）であること、リクエストの `model` id でルーティングすること、そしてマッピングされたモデルについて Anthropic Messages ⇄ OpenAI Responses API を変換すること。Claude Code のプロンプトが変わるたびに壊れるようなプロンプト形状ヒューリスティックは使いません。

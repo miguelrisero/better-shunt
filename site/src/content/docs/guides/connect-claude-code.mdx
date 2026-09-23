@@ -136,14 +136,14 @@ codex login                    # codex/ChatGPT provider (auto-refreshed thereaft
 Claude Code's model discovery only honors ids beginning with `claude`/`anthropic`, so for OpenAI/Codex ids (`gpt-*`) use `ANTHROPIC_CUSTOM_MODEL_OPTION` — it adds a picker entry whose id skips validation:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 Then pick it from `/model` in Claude Code. That id is what shunt routes on, so it must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or `[[route_prefixes]]` rule in your config.
 
 The two picker-exposure methods split cleanly on the `claude-`/`anthropic-` prefix — they don't overlap. Discovery honors *only* `claude-`/`anthropic-` ids; `ANTHROPIC_CUSTOM_MODEL_OPTION` and the `CLAUDE_CODE_MAX_CONTEXT_TOKENS` window override apply *only* to ids that do **not** start with that prefix:
 
-| What | `claude-`/`anthropic-` id (discovery alias) | non-`claude-` id (e.g. `gpt-5.6-sol`) |
+| What | `claude-`/`anthropic-` id (discovery alias) | non-`claude-` id (e.g. `gpt-6-sol`) |
 | :-- | :-- | :-- |
 | [`/v1/models` discovery](/guides/model-discovery/) → `/model` picker | ✅ auto-listed ("From gateway"), many models | ❌ dropped by Claude Code |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (**one id only**) |
@@ -155,7 +155,7 @@ So a `claude-…-via-codex` discovery alias is convenient (auto-listed, one-tap)
 
 <Aside type="tip" title="Or remap the tier aliases">
 
-A third option repoints Claude Code's built-in `haiku`/`sonnet`/`opus` aliases at Codex slugs (e.g. `haiku → gpt-5.6-luna`, `sonnet → gpt-5.6-sol`), so the whole session's tier system resolves to your ChatGPT subscription without `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [ChatGPT / Codex → Remap the tier aliases](/guides/codex/#remap-the-tier-aliases-to-codex).
+A third option repoints Claude Code's built-in `haiku`/`sonnet`/`opus` aliases at Codex slugs (e.g. `haiku → gpt-6-luna`, `sonnet → gpt-6-sol`), so the whole session's tier system resolves to your ChatGPT subscription without `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [ChatGPT / Codex → Remap the tier aliases](/guides/codex/#remap-the-tier-aliases-to-codex).
 
 </Aside>
 
@@ -169,7 +169,7 @@ Per-context selection works via Claude Code's own knobs — divert one agent to 
 # .claude/agents/researcher.md
 ---
 name: researcher
-model: gpt-5.6-sol   # this agent's inference is diverted; the main session stays on Claude
+model: gpt-6-sol   # this agent's inference is diverted; the main session stays on Claude
 ---
 ```
 
@@ -189,7 +189,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 Then start `claude`, run `/status`, and check the **Anthropic base URL** line shows your gateway. See also [Effort & Context](/guides/effort-and-context/) for reasoning-effort and context-window tuning, and [Client Environment Variables](/reference/client-environment/) for the environment variables that change behind a gateway.
@@ -215,13 +215,13 @@ claude --output-format stream-json --verbose -p \
     '
 ```
 
-For the example agent above, the result should be `researcher` and `gpt-5.6-sol`. Then confirm
+For the example agent above, the result should be `researcher` and `gpt-6-sol`. Then confirm
 that shunt maps the resolved ID to the intended provider and upstream model when it uses an exact
 `[[routes]]` entry:
 
 ```bash
 curl -s "${ANTHROPIC_BASE_URL%/}/routes" \
-  | jq '.data[] | select(.model == "gpt-5.6-sol")'
+  | jq '.data[] | select(.model == "gpt-6-sol")'
 ```
 
 `GET /routes` exposes exact `[[routes]]` entries only; it does not expand `[[route_prefixes]]`.

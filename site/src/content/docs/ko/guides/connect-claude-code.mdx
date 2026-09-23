@@ -136,14 +136,14 @@ codex login                    # codex/ChatGPT 프로바이더 (이후 자동 �
 Claude Code의 모델 디스커버리는 `claude`/`anthropic`으로 시작하는 id만 존중하므로, OpenAI/Codex id(`gpt-*`)에는 `ANTHROPIC_CUSTOM_MODEL_OPTION`을 사용하세요 — 이는 id가 검증을 건너뛰는 선택기 항목을 추가합니다:
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
 ```
 
 그런 다음 Claude Code의 `/model`에서 선택하세요. 그 id가 shunt가 라우팅하는 대상이므로, 일치하는 `[models.upstream_model]` 항목, `[[routes]]`, 또는 `[[route_prefixes]]` 규칙으로 해석되어야 합니다.
 
 두 가지 선택기 노출 방법은 `claude-`/`anthropic-` 프리픽스를 기준으로 깔끔하게 갈리며 — 겹치지 않습니다. 디스커버리는 *오직* `claude-`/`anthropic-` id만 존중하고, `ANTHROPIC_CUSTOM_MODEL_OPTION`과 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 윈도우 오버라이드는 *오직* 그 프리픽스로 시작하지 **않는** id에만 적용됩니다:
 
-| 항목 | `claude-`/`anthropic-` id (디스커버리 별칭) | 비-`claude-` id (예: `gpt-5.6-sol`) |
+| 항목 | `claude-`/`anthropic-` id (디스커버리 별칭) | 비-`claude-` id (예: `gpt-6-sol`) |
 | :-- | :-- | :-- |
 | [`/v1/models` 디스커버리](/ko/guides/model-discovery/) → `/model` 선택기 | ✅ 자동 등록("From gateway"), 여러 모델 | ❌ Claude Code가 버림 |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ 존중되지 않음 | ✅ 선택기에 추가(**id 하나만**) |
@@ -155,7 +155,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 
 <Aside type="tip" title="또는 티어 별칭 재매핑">
 
-세 번째 옵션은 Claude Code의 내장 `haiku`/`sonnet`/`opus` 별칭을 Codex 슬러그로 다시 가리키게 하는 것입니다(예: `haiku → gpt-5.6-luna`, `sonnet → gpt-5.6-sol`). 그러면 `ANTHROPIC_CUSTOM_MODEL_OPTION` 없이도 세션 전체의 티어 시스템이 ChatGPT 구독으로 해석됩니다. [ChatGPT / Codex → 티어 별칭 재매핑](/ko/guides/codex/#티어-별칭을-codex로-재매핑)을 참고하세요.
+세 번째 옵션은 Claude Code의 내장 `haiku`/`sonnet`/`opus` 별칭을 Codex 슬러그로 다시 가리키게 하는 것입니다(예: `haiku → gpt-6-luna`, `sonnet → gpt-6-sol`). 그러면 `ANTHROPIC_CUSTOM_MODEL_OPTION` 없이도 세션 전체의 티어 시스템이 ChatGPT 구독으로 해석됩니다. [ChatGPT / Codex → 티어 별칭 재매핑](/ko/guides/codex/#티어-별칭을-codex로-재매핑)을 참고하세요.
 
 </Aside>
 
@@ -169,7 +169,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 # .claude/agents/researcher.md
 ---
 name: researcher
-model: gpt-5.6-sol   # 이 에이전트의 추론이 우회됨; 메인 세션은 Claude에 머무름
+model: gpt-6-sol   # 이 에이전트의 추론이 우회됨; 메인 세션은 Claude에 머무름
 ---
 ```
 
@@ -189,7 +189,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-5.6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 그런 다음 `claude`를 시작하고, `/status`를 실행하여 **Anthropic base URL** 줄이 게이트웨이를 표시하는지 확인하세요. 추론 노력과 컨텍스트 윈도우 튜닝은 [노력 & 컨텍스트](/ko/guides/effort-and-context/)도 참고하세요.

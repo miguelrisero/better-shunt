@@ -61,7 +61,7 @@ it supports either way of presenting the shunt token (step 3):
 ```toml
 # ~/.codex/config.toml
 model_provider = "shunt"          # select it as the active provider
-model = "gpt-5.6-sol"             # an entitled slug — see step 5
+model = "gpt-6-sol"             # an entitled slug — see step 5
 
 [model_providers.shunt]
 name = "shunt"
@@ -246,10 +246,10 @@ accepts the slugs your account is **currently entitled** to — it **rejects** `
 an entitled slug, e.g. in `~/.codex/config.toml`:
 
 ```toml
-model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
+model = "gpt-6-sol"   # entitled slug, not a *-codex one
 ```
 
-Current entitled slugs are `gpt-5.6-sol` / `-terra` / `-luna` and `gpt-5.5` / `gpt-5.4` /
+Current entitled slugs are `gpt-6-sol` / `-terra` / `-luna` and `gpt-5.5` / `gpt-5.4` /
 `gpt-5.4-mini` / `gpt-5.2` — older accounts may only have the earlier ones. See
 [ChatGPT / Codex → Route a model](/guides/codex/#3-route-a-model-to-codex) for the authoritative
 list. A request naming a model your subscription lacks fails exactly as it would talking to
@@ -268,7 +268,7 @@ return an `x-shunt-account` header:
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -H "content-type: application/json" \
   -H "x-shunt-token: <token>" \
-  -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
+  -d '{"model":"gpt-6-sol","input":"say hi","stream":true}'
 ```
 
 - A `200` with `content-type: text/event-stream` and an `x-shunt-account:` header ⇒ the pool served

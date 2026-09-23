@@ -78,14 +78,14 @@ shunt は `GET /v1/models` を提供するため、Claude Desktop は起動時�
 // (each entry also carries "type": "model", "display_name", "created_at",
 //  "max_input_tokens", and "max_tokens")
 { "data": [
-  { "id": "claude-opus-5" },     { "id": "claude-sonnet-5" },
-  { "id": "claude-fable-5" },    { "id": "claude-opus-4-8" },
-  { "id": "claude-opus-4-7" },   { "id": "claude-sonnet-4-6" },
-  { "id": "claude-opus-4-6" },   { "id": "claude-opus-4-5-20251101" },
-  { "id": "claude-haiku-4-5-20251001" }, { "id": "claude-sonnet-4-5-20250929" },
-  { "id": "claude-opus-4-1-20250805" }
+  { "id": "claude-opus-5-5" },   { "id": "claude-opus-5" },
+  { "id": "claude-sonnet-5" },   { "id": "claude-fable-5" },
+  { "id": "claude-opus-4-8" },   { "id": "claude-opus-4-7" },
+  { "id": "claude-sonnet-4-6" }, { "id": "claude-opus-4-6" },
+  { "id": "claude-opus-4-5-20251101" }, { "id": "claude-haiku-4-5-20251001" },
+  { "id": "claude-sonnet-4-5-20250929" }, { "id": "claude-opus-4-1-20250805" }
 ], "has_more": false,
-   "first_id": "claude-opus-5", "last_id": "claude-opus-4-1-20250805" }
+   "first_id": "claude-opus-5-5", "last_id": "claude-opus-4-1-20250805" }
 ```
 
 選定した `claude-<slug>-via-<provider>` エイリアス（Claude Code で機能するパターン）は **Claude Desktop では破棄されます** — [モデルディスカバリー → Claude Desktop は tier 名の id のみを認識します](/ja/guides/model-discovery/#claude-desktop-は-tier-名の-id-のみを認識します)を参照してください。
@@ -98,7 +98,7 @@ shunt は `GET /v1/models` を提供するため、Claude Desktop は起動時�
   [[routes]]
   model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
   provider = "codex"
-  upstream_model = "gpt-5.6-sol"   # real backend slug
+  upstream_model = "gpt-6-sol"   # real backend slug
   ```
 
 - **Desktop 側で discovery を上書きする。** shunt がルーティングする正確な id を、明示的な `inferenceModels` リストに指定します。すべてのエントリが完全な id なら、Claude Desktop は `/v1/models` の呼び出しをスキップします。

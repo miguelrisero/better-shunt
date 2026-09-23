@@ -12,13 +12,13 @@
     {
       "name": "shunt-codex",
       "source": "./plugins/shunt-codex",
-      "description": "Subagents on ChatGPT/Codex GPT-5.6 models (Luna, Sol, Terra), routed through shunt at the inference layer.",
-      "keywords": ["codex", "chatgpt", "gpt-5.6"]
+      "description": "Subagents on ChatGPT/Codex models (GPT-6-Sol, GPT-6-Luna, GPT-5.6-Terra), routed through shunt at the inference layer.",
+      "keywords": ["codex", "chatgpt", "gpt-6", "gpt-5.6"]
     },
     {
       "name": "shunt-xai",
       "source": "./plugins/shunt-xai",
-      "description": "Subagents on xAI Grok models (grok-4.6, grok-4.5, grok-build-0.1), routed through shunt at the inference layer. EXPERIMENTAL — the xAI provider is not yet verified against the live API.",
+      "description": "Subagents on xAI Grok models (grok-4.7, grok-build-0.1), routed through shunt at the inference layer. EXPERIMENTAL — the xAI provider is not yet verified against the live API.",
       "keywords": ["xai", "grok"]
     },
     {

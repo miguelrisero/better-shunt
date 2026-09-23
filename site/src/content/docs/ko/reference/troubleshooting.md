@@ -7,7 +7,7 @@ description: 흔한 shunt 오류와 해결 방법.
 | :-- | :-- |
 | `ChatGPT auth not found; run codex login` | shunt가 `~/.codex/auth.json`을 읽을 수 없습니다. `codex login`을 실행하세요. |
 | 매핑된 모델에서 `authentication_error` | 만료/부재한 프로바이더 자격 증명 — `codex login`을 다시 실행하거나 `OPENAI_API_KEY`를 export하세요. shunt는 백엔드의 실제 `detail` 메시지를 노출합니다. |
-| `400 … model is not supported when using Codex with a ChatGPT account` | `-codex` 슬러그(또는 계정에 부여되지 않은 것)를 사용했습니다. [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)에서 부여된 슬러그(예: `gpt-5.6-sol`, `gpt-5.5`)를 사용하거나 `upstream_model`을 설정하세요. |
+| `400 … model is not supported when using Codex with a ChatGPT account` | `-codex` 슬러그(또는 계정에 부여되지 않은 것)를 사용했습니다. [models.json](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)에서 부여된 슬러그(예: `gpt-6-sol`, `gpt-5.5`)를 사용하거나 `upstream_model`을 설정하세요. |
 | `/model`이 모델을 나열하지 않음 | `gpt-*` id에는 `ANTHROPIC_CUSTOM_MODEL_OPTION`을 사용하세요; [디스커버리](/ko/guides/model-discovery/)는 `claude`/`anthropic` 프리픽스 id만 노출합니다. |
 | `opus`가 Opus 4.7을 선택하거나 `sonnet`이 Sonnet 4.6을 선택함 | Claude Code의 내장 별칭 표는 게이트웨이 세션에서 해당 티어로 고정합니다. `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5`로 클라이언트 측 티어를 고정하거나 shunt에서 id를 다시 매핑하세요. [모델 별칭](/ko/guides/model-aliases/#별칭-해석)을 참고하세요. |
 | Opus/Fable의 컨텍스트 윈도우가 200K로 표시됨 | Claude Code는 base URL이 `api.anthropic.com`일 때만 모델의 기본 1M 윈도우를 신뢰합니다. `opus[1m]` / `fable[1m]`을 선택하세요. [모델 별칭](/ko/guides/model-aliases/#1m-컨텍스트가-자동으로-적용되지-않음)을 참고하세요. |

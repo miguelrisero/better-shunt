@@ -5,10 +5,10 @@ use axum::http::HeaderValue;
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
-/// Codex CLI client identity, mirrored from openai/codex rust-v0.153.3.
+/// Codex CLI client identity, mirrored from openai/codex rust-v0.155.1.
 ///
-/// The ChatGPT backend routes newer model slugs (e.g. gpt-6-astra, which has
-/// `minimal_client_version: 0.153.0`) by client identity and answers
+/// The ChatGPT backend routes newer model slugs (e.g. gpt-6-sol and gpt-6-luna,
+/// which have `minimal_client_version: 0.155.0`) by client identity and answers
 /// "Model not found" — not an entitlement error — when the identity is
 /// missing or too old. Per openai/codex#31967 the gate keys on the
 /// `originator` + `version` header combination; the `user-agent` is sent for
@@ -20,8 +20,8 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// `pub(crate)`: also reused by `crate::auth::codex::usage` (the wham/usage
 /// poller) so its CLI identity headers cannot drift from the Responses
 /// adapter's own.
-pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.153.3";
-pub(crate) const CODEX_CLIENT_VERSION: &str = "0.153.3";
+pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.155.1";
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.155.1";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription
@@ -44,8 +44,9 @@ pub(super) const MAX_ROUTING_HINT_MODEL_LEN: usize = 128;
 ///
 /// A model slug is an opaque id. Every slug reachable on this path is drawn from
 /// this set — verified against the Codex/OpenAI slugs this repo knows about
-/// (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`,
-/// `gpt-5.4-mini`, `gpt-5.2`, `gpt-5.2-codex`, …), which use only `-` and `.`;
+/// (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+/// `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.2`,
+/// `gpt-5.2-codex`, …), which use only `-` and `.`;
 /// `_`, `:`, `/` and `+` are headroom for provider-qualified id styles. Anything
 /// outside it cannot be a real slug and must not be interpolated into the hint's
 /// `model=<m>[;tier=<t>]` grammar, whose server-side parser shunt does not own.
@@ -262,6 +263,18 @@ mod tests {
     };
 
     use super::{build_test_request, request_builder, responses_url};
+
+    /// openai/codex `models.json` gives `gpt-6-sol` and `gpt-6-luna`
+    /// `minimal_client_version: 0.155.0`; an older identity gets "Model not found".
+    #[test]
+    fn codex_client_identity_meets_gpt_6_minimal_client_version() {
+        let version = |v: &str| -> Vec<u32> { v.split('.').map(|n| n.parse().unwrap()).collect() };
+        assert!(version(super::CODEX_CLIENT_VERSION) >= version("0.155.0"));
+        assert_eq!(
+            super::CODEX_USER_AGENT,
+            format!("codex_cli_rs/{}", super::CODEX_CLIENT_VERSION)
+        );
+    }
 
     fn codex_route() -> Route {
         Route {

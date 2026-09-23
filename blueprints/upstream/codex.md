@@ -45,14 +45,14 @@ Use a Claude-named public id for discovery and map it to an entitled Codex model
 
 ```toml
 [[models]]
-id = "claude-gpt-5-6-sol-via-codex"
+id = "claude-gpt-6-sol-via-codex"
 display_name = "GPT-5.6 Sol (via Codex)"
 
 [models.upstream_model]
-codex = "gpt-5.6-sol"
+codex = "gpt-6-sol"
 ```
 
-The map key is the upstream name. Confirm the operator's live account is entitled to the chosen upstream model. A legacy `[[routes]]` entry can instead use `provider = "codex"` and `upstream_model = "gpt-5.6-sol"`; do not define both exact-routing forms for one id.
+The map key is the upstream name. Confirm the operator's live account is entitled to the chosen upstream model. A legacy `[[routes]]` entry can instead use `provider = "codex"` and `upstream_model = "gpt-6-sol"`; do not define both exact-routing forms for one id.
 
 ## Validate
 
@@ -78,7 +78,7 @@ Send one minimal request through the mapped id:
 curl -sS http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \
-  -d '{"model":"claude-gpt-5-6-sol-via-codex","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
+  -d '{"model":"claude-gpt-6-sol-via-codex","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
 ```
 
 Confirm a successful response and that the selected upstream is `codex`. If the backend rejects the model, discover an entitled slug before changing routing.
