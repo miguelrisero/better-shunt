@@ -24,6 +24,7 @@ use super::{
 };
 
 pub(crate) mod chain;
+pub(crate) mod gated;
 
 // Re-exported at the old path: the adapters and the committed streaming chain
 // classify statuses with these, and the split that moved the loop into `chain`
@@ -274,6 +275,12 @@ pub(super) async fn forward(
     // the verdict and the fallback (`routing::driven`). It writes no pin:
     // libsy keeps this entry's session state inside the algorithm instance,
     // which is why that instance is long-lived.
+    //
+    // A gated entry (`escalation`, `advisor`) is driven by `gated::consult`
+    // instead: its first model call is the caller's own turn, retained, so the
+    // drive may end with the answer already in hand (`gated_exit`, served after
+    // the decision is counted below) rather than with a target to dispatch.
+    let mut gated_exit = None;
     if let (Some(kind), Some(outcome)) =
         (consult.map(|consult| consult.kind), router_outcome.as_mut())
     {
@@ -282,7 +289,18 @@ pub(super) async fn forward(
             routing::stage::ConsultKind::Overlay => state.driven_routers.overlay(model_key),
             routing::stage::ConsultKind::StageClassifier => None,
         };
-        if let Some(entry) = entry {
+        if let Some(entry) = entry.filter(|entry| entry.is_gated()) {
+            let turn = gated::GatedTurn {
+                state: &state,
+                entry,
+                uri,
+                headers,
+                base_headers: &base_headers,
+                inbound: &inbound,
+                requested_model: &requested_model,
+            };
+            gated_exit = gated::consult(turn, &mut body, &mut routes, outcome).await;
+        } else if let Some(entry) = entry {
             // Cloned so the mint's borrow is of a local, leaving `outcome`
             // free to be rewritten by the decision below.
             let router_id = outcome.model.clone();
@@ -362,6 +380,9 @@ pub(super) async fn forward(
             crate::metrics::record_stage_flip(&outcome.model, from.as_label(), to.as_label());
         }
     }
+    if let Some(exit) = gated_exit {
+        return gated::finish(exit, started_at, &requested_safeguards, max_request_bytes).await;
+    }
     // The handoff note rides the admitted request, so it is applied on the same
     // boundary the counters are: a rejected turn never reaches an upstream and
     // must not have its prompt rewritten on the way to being refused.
@@ -417,6 +438,7 @@ pub(super) async fn forward(
                 requested_model,
                 started_at,
                 router_stamp: owned_router_stamp,
+                observe_stream: true,
             },
         )
         .await;
@@ -431,10 +453,10 @@ pub(super) async fn forward(
         requested_model: &requested_model,
         router_stamp,
         caller: "client",
-        // A client turn is never capped: the reply is bounded by the request
-        // the caller made, and a cap here would be a new way for ordinary
+        // A client turn is never bounded: the reply is bounded by the request
+        // the caller made, and a bound here would be a new way for ordinary
         // traffic to fail. Only `routing::serve`'s internal calls set one.
-        response_byte_cap: None,
+        response_bounds: crate::adapters::ResponseBounds::default(),
     };
     let success = chain::run_chain(chain).await?;
     Ok(observe_response(
@@ -566,12 +588,16 @@ async fn count_tokens_response(
         // parsing.
         let headers = headers_for_route(&state, &route, base_headers, inbound, true, None);
         dispatch(
-            state, route, uri, &headers, body,
+            state,
+            route,
+            uri,
+            &headers,
+            body,
             // A `count_tokens` probe never makes an internal model call — the
             // judge lane excludes probes, and the prefill lane, which does
             // drive them, decides from the transcript and its affinity alone
             // — so it is always a client path.
-            None,
+            crate::adapters::ResponseBounds::default(),
         )
         .await
     };
@@ -626,37 +652,37 @@ async fn dispatch(
     uri: &Uri,
     headers: &HeaderMap,
     body: crate::request::RequestBody,
-    response_byte_cap: Option<usize>,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     match route.adapter {
         AdapterKind::Anthropic => {
             AnthropicAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Responses => {
             ResponsesAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Cursor => {
             CursorAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Gemini => {
             crate::adapters::gemini::GeminiAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::AntigravityCli => {
             crate::adapters::antigravity::AntigravityAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
         AdapterKind::Noop => {
             crate::adapters::noop::NoopAdapter
-                .forward(state, route, uri, headers, body, response_byte_cap)
+                .forward(state, route, uri, headers, body, bounds)
                 .await
         }
     }
