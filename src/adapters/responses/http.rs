@@ -12,9 +12,12 @@ use axum::{
 };
 
 use crate::{
-    adapters::{collect_upstream_body, too_large_error, AdapterError, UpstreamBodyError},
+    adapters::{
+        collect_upstream_sse_body, idle_error, mark_body_broke, too_large_error, AdapterError,
+        ResponseBounds, UpstreamBodyError,
+    },
     auth::Credential,
-    model::responses::parse_sse_events,
+    model::responses::{parse_sse_events, AnthropicSseMachine},
     routing::Route,
     server::AppState,
 };
@@ -172,7 +175,7 @@ pub(super) async fn forward_http(
         upstream,
         turn.relay(route),
         input_tokens_estimate,
-        turn.response_byte_cap,
+        turn.response_bounds,
     )
     .await?;
     Ok((response.status(), response))
@@ -218,7 +221,7 @@ pub(super) async fn json_response(
     upstream: reqwest::Response,
     relay: RelayOptions,
     input_tokens_estimate: u64,
-    response_byte_cap: Option<usize>,
+    bounds: ResponseBounds,
 ) -> Result<axum::response::Response, AdapterError> {
     // This is the one Responses path that buffers a whole upstream reply, so
     // it is the one that has to honour `judge_max_response_bytes`. A judge call
@@ -226,12 +229,23 @@ pub(super) async fn json_response(
     // every internal call through a `kind = "responses"` target lands here —
     // and reading it with `text()` would let a judge allocate without bound
     // until the deadline instead of failing open at the configured limit.
-    // `None` is the client path and stays byte-for-byte what it was.
-    let body = match collect_upstream_body(upstream, response_byte_cap).await {
+    // The idle gap bites here for the same reason on a gated call: this read
+    // finishes before `run_chain` returns, so an upstream that commits its
+    // headers and stalls would otherwise hold the turn until
+    // `gated_max_duration_ms`. The body is SSE, so the gap is measured
+    // between completed content frames: keep-alive pings alone do not hold a
+    // stalled turn open. The default is the client path and stays
+    // byte-for-byte what it was.
+    let body = match collect_upstream_sse_body(upstream, bounds.max_bytes, bounds.idle).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
+        Err(UpstreamBodyError::Idle(idle)) => return Err(idle_error(idle)),
+        // Only ever a successful reply here: a turn cut before its terminal
+        // event, which `routing::serve` reads back through the marker.
         Err(UpstreamBodyError::Transport(error)) => {
-            return Err(own_error(format!("failed to read Responses body: {error}")))
+            return Err(mark_body_broke(own_error(format!(
+                "failed to read Responses body: {error}"
+            ))))
         }
     };
     let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
@@ -241,7 +255,26 @@ pub(super) async fn json_response(
     if let Some((status, error)) = machine.take_backend_error() {
         return Err(backend_error(status, error));
     }
-    Ok((StatusCode::OK, axum::Json(machine.final_json())).into_response())
+    Ok(message_response(&mut machine))
+}
+
+/// The `200` a non-streaming collector answers with: the machine's single
+/// message, marked [`crate::stream_metrics::UpstreamTruncated`] when the
+/// machine reached no terminal event. Shared with the websocket collector
+/// (`ws_stream::json_events_response`) so both transports mark alike.
+///
+/// Read before `final_json`, which finishes an unstopped machine: a turn that
+/// reached no terminal event is still returned, as it always was, but marked,
+/// the way the streaming path marks its synthesized completion.
+pub(super) fn message_response(machine: &mut AnthropicSseMachine) -> axum::response::Response {
+    let truncated = !machine.is_stopped();
+    let mut response = (StatusCode::OK, axum::Json(machine.final_json())).into_response();
+    if truncated {
+        response
+            .extensions_mut()
+            .insert(crate::stream_metrics::UpstreamTruncated);
+    }
+    response
 }
 
 #[cfg(test)]
@@ -293,7 +326,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"Upstream failed\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0, None)
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("backend error event should stop failover");
 
@@ -318,7 +351,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0, None)
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -327,6 +360,145 @@ mod tests {
         let body = response_body_json(*error.response).await;
         assert_eq!(body["error"]["type"], "rate_limit_error");
         assert_eq!(body["error"]["message"], "Rate limit reached");
+    }
+
+    /// A `200` whose body breaks after its first chunk is a turn cut before its
+    /// terminal event: the error carries the marker `routing::serve` reads back
+    /// to fall a gated turn back, and is otherwise the error it always was.
+    #[tokio::test]
+    async fn json_response_marks_a_body_broken_after_the_headers() {
+        let chunks = futures_util::stream::iter([
+            Ok(bytes::Bytes::from_static(
+                b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            )),
+            Err(std::io::Error::other("connection reset")),
+        ]);
+        let upstream = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        );
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+            .await
+            .expect_err("a broken body is an error");
+
+        assert!(error.failure.is_none());
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyBroke>()
+            .is_some());
+    }
+
+    /// A `200` SSE reply built in-process whose chunks arrive on the clock: each
+    /// `(delay, bytes)` is yielded `delay` after the one before it.
+    fn timed_sse_upstream<S>(chunks: S) -> reqwest::Response
+    where
+        S: futures_util::Stream<Item = (std::time::Duration, &'static [u8])> + Send + 'static,
+    {
+        use futures_util::StreamExt;
+        let chunks = chunks.then(|(delay, chunk)| async move {
+            tokio::time::sleep(delay).await;
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(chunk))
+        });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .header("content-type", "text/event-stream")
+                .body(reqwest::Body::wrap_stream(chunks))
+                .unwrap(),
+        )
+    }
+
+    /// A gated read's idle gap is measured between completed content frames:
+    /// an upstream that commits its headers and then sends nothing but
+    /// keep-alives — comment frames and `event: ping` — well inside the gap is
+    /// still cut at the gap, not held until the call's wall-clock bound.
+    ///
+    /// Non-vacuity: refresh the deadline on every chunk in
+    /// `collect_bounded_body` and the keep-alives hold the read open forever,
+    /// so the outer timeout fires and this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn json_response_cuts_a_keep_alive_only_body_at_the_idle_gap() {
+        let tick = std::time::Duration::from_millis(50);
+        let keep_alives: [&'static [u8]; 2] = [b": keep-alive\n\n", b"event: ping\ndata: {}\n\n"];
+        let upstream = timed_sse_upstream(futures_util::stream::iter(
+            keep_alives
+                .into_iter()
+                .cycle()
+                .map(move |chunk| (tick, chunk)),
+        ));
+        let idle = std::time::Duration::from_millis(300);
+        let started = tokio::time::Instant::now();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            json_response(
+                upstream,
+                relay_opts(),
+                0,
+                ResponseBounds {
+                    max_bytes: None,
+                    idle: Some(idle),
+                },
+            ),
+        )
+        .await
+        .expect("keep-alives alone must not hold the read past the idle gap")
+        .expect_err("a body that only keeps alive is cut at the idle gap");
+
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none());
+        assert_eq!(
+            started.elapsed(),
+            idle,
+            "cut at the gap armed after the headers"
+        );
+    }
+
+    /// A content frame split across two chunks is progress once its second
+    /// half completes it: each half arrives inside the gap, the frame they
+    /// complete re-arms it, and the turn finishes even though it spans more
+    /// than one gap end to end.
+    #[tokio::test(start_paused = true)]
+    async fn json_response_counts_a_split_content_frame_as_progress() {
+        let gap = std::time::Duration::from_millis(200);
+        let upstream = timed_sse_upstream(futures_util::stream::iter([
+            (
+                std::time::Duration::from_millis(50),
+                &b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\nevent: response.output_item.added\ndata: {\"item\":{\"type\":\"message\"}}\n\n"[..],
+            ),
+            (gap, &b"event: response.output_text.delta\ndata: {\"del"[..]),
+            (gap, &b"ta\":\"hello\"}\n\n"[..]),
+            (
+                gap + gap,
+                &b"event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"[..],
+            ),
+        ]));
+        let response = json_response(
+            upstream,
+            relay_opts(),
+            0,
+            ResponseBounds {
+                max_bytes: None,
+                idle: Some(std::time::Duration::from_millis(500)),
+            },
+        )
+        .await
+        .expect("a turn whose frames keep completing inside the gap finishes");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "hello");
     }
 
     /// A clean turn still returns the collected Anthropic message as `200 OK` —
@@ -346,14 +518,48 @@ mod tests {
             "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts(), 0, None)
+        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
             .await
             .expect("json_response builds a response");
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .extensions()
+                .get::<crate::stream_metrics::UpstreamTruncated>()
+                .is_none(),
+            "a completed turn must not be marked truncated"
+        );
         let body = response_body_json(response).await;
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// An upstream that ends before `response.completed` still gets its
+    /// synthesized message, as before, but marked — the JSON counterpart of
+    /// the streaming path's truncation marker, which the gated capture reads.
+    #[tokio::test]
+    async fn json_response_marks_a_message_synthesized_from_a_truncated_upstream() {
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"item\":{\"type\":\"message\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"partial\"}\n\n",
+        );
+        let upstream = upstream_response(200, sse).await;
+        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+            .await
+            .expect("json_response builds a response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .extensions()
+            .get::<crate::stream_metrics::UpstreamTruncated>()
+            .is_some());
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "partial");
     }
 
     /// A non-streaming turn cut short by an emulated stop sequence reports the
@@ -379,7 +585,7 @@ mod tests {
             ..relay_opts()
         };
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay, 11, None)
+        let response = json_response(upstream, relay, 11, ResponseBounds::default())
             .await
             .expect("json_response builds a response");
 
@@ -497,7 +703,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
-                response_byte_cap: None,
+                response_bounds: ResponseBounds::default(),
             },
             codex_quota_account: None,
             estimate_input: None,
@@ -563,7 +769,7 @@ mod tests {
                 thinking_enabled: false,
                 tool_search_native: false,
                 stop_sequences: Vec::new(),
-                response_byte_cap: None,
+                response_bounds: ResponseBounds::default(),
             },
             codex_quota_account: None,
             estimate_input: None,
@@ -647,7 +853,17 @@ mod tests {
         .expect("request body parses");
 
         let error = super::super::ResponsesAdapter
-            .forward(state, codex_route(), &uri, &headers, body, Some(1024))
+            .forward(
+                state,
+                codex_route(),
+                &uri,
+                &headers,
+                body,
+                crate::adapters::ResponseBounds {
+                    max_bytes: Some(1024),
+                    idle: None,
+                },
+            )
             .await
             .expect_err("a reply past the cap is refused");
 
