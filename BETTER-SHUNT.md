@@ -6,7 +6,7 @@ named `shunt`; DevPod owns opt-in installation and account setup.
 
 ## Baseline and maintained changes
 
-Upstream baseline: `7ccedd30dc8482953cbdfc7bc0e8b53e9c0f03fc` (v0.48.0), merged into
+Upstream baseline: `0462fb5364908d21ae154ee1fc26baa590ded48b` (v0.49.1), merged into
 fork `main`. Changes are deliberately pinned instead of deploying upstream main automatically.
 
 - Conservative schema regex filtering: a pattern must pass the Python compatibility
@@ -28,6 +28,18 @@ Upstream v0.48.0 provides the Codex client identity (`0.156.0`), native `tool_se
 for `gpt-6-astra`/`gpt-6-sol`/`gpt-6-luna`, `claude-opus-5-5` discovery, non-strict
 function tools and WebSocket test account-store isolation.
 
+Upstream v0.49.0 and v0.49.1 add the buffer-and-replay routing lane for escalation and
+advisor ([#652](https://github.com/pleaseai/shunt/issues/652)), `gated_idle_ms`
+enforcement in the Anthropic adapter's non-streaming model rewrite
+([#668](https://github.com/pleaseai/shunt/issues/668)) and across the Gemini, Responses
+HTTP and Cursor whole-body reads ([#670](https://github.com/pleaseai/shunt/issues/670)),
+in-stream `slow_down`/overload/policy error classification
+([#661](https://github.com/pleaseai/shunt/issues/661)) and status handling on wrapped
+Codex WebSocket error frames ([#675](https://github.com/pleaseai/shunt/issues/675)).
+The fork carries no patch for any of them. #661 supersedes the upstream assertion that
+only `rate_limit_exceeded` is a throttle, so that comment leaves
+`tests/responses_translate.rs` by upstream change, not by a dropped fork patch.
+
 ## Build dependencies
 
 Default builds use three non-optional git dependencies from
@@ -38,7 +50,7 @@ boundary in `src/routing/` and `src/config/router/` uses them; no feature flag r
 The optional `prefill-router` crate from the same rev links libpython through `pyo3`.
 Release builds do not enable `prefill-router`; CI builds it through `--all-features`.
 
-## Upstream issue audit — 2026-09-12
+## Upstream issue audit — 2026-09-27 (re-checked at v0.49.1; #489, #492, #424 and #450 all still open)
 
 | Issue | Applicability and policy |
 | --- | --- |
