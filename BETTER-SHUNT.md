@@ -1,8 +1,10 @@
 # Better Shunt
 
-Private downstream of [pleaseai/shunt](https://github.com/pleaseai/shunt), retaining
+Public downstream of [pleaseai/shunt](https://github.com/pleaseai/shunt), retaining
 upstream history, authorship, and LICENSE. The executable and configuration remain
 named `shunt`; DevPod owns opt-in installation and account setup.
+
+Setup guide: [docs/setup-shunt.md](https://github.com/miguelrisero/ultraship/blob/main/docs/setup-shunt.md).
 
 ## Baseline and maintained changes
 
@@ -19,7 +21,7 @@ fork `main`. Changes are deliberately pinned instead of deploying upstream main 
   truncation of the callable catalog.
 - `shunt init` starter example uses `gpt-6-sol`.
 - `tests/compatibility_guards.rs` pins these guards, including the public Neon email pattern.
-- Company model policy for fork-owned guidance: no Grok subagent plugin, Grok setup
+- Fork model policy for fork-owned guidance: no Grok subagent plugin, Grok setup
   guides or Grok example routes, and no `gpt-5.6-sol`/`gpt-5.6-luna` examples or agents.
   Codex examples use `gpt-6-sol` and `gpt-6-luna`. Upstream xAI/Grok provider code,
   its compiled blueprints and its reference tables remain unchanged.
@@ -74,7 +76,7 @@ updating its immutable commit pin. Merge that pull request with a merge commit s
 ancestry stays in `main`.
 Do not run provider-account tests against a developer's real credentials. Hosted CI
 uses an empty runner and no model secrets. Only CI is enabled here; upstream site,
-wiki, coverage-upload and release automation are not inherited as company deployments.
+wiki, coverage-upload and release automation are not inherited as fork deployments.
 
 Release binaries are built with the Rust version in `.github/workflows/ci.yml`,
 `cargo build --release --locked`, release opt-level 1, LTO disabled and debug symbols
