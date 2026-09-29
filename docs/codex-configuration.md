@@ -180,14 +180,14 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `authorization` | `Bearer <access_token>` |
 | `chatgpt-account-id` | `<account_id>` |
 | `originator` | `codex_cli_rs` |
-| `user-agent` | `codex_cli_rs/0.156.0` (`CODEX_USER_AGENT`) |
-| `version` | `0.156.0` (`CODEX_CLIENT_VERSION`) |
+| `user-agent` | `codex_cli_rs/0.159.0` (`CODEX_USER_AGENT`) |
+| `version` | `0.159.0` (`CODEX_CLIENT_VERSION`) |
 | `x-codex-routing-hint` | `model=<upstream_model>`, or `model=<upstream_model>;tier=<service_tier>` when a tier is set — omitted when the model can't be safely put in a header (see below) |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
 | `content-encoding` | `zstd` — only when the request body was compressed (see §4.5) |
 
-The `user-agent` / `version` are **pinned to openai/codex rust-v0.156.0**. If a future slug
+The `user-agent` / `version` are **pinned to openai/codex rust-v0.159.0**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
 `src/adapters/responses/request.rs`.
 
@@ -276,7 +276,7 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
   `/models` fetch it performs at startup.
 
 > **Client-version gating.** Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra`
-> and `gpt-6.1-sol` need ≥ 0.153.0; `gpt-6-luna` needs ≥ 0.155.0). When the request's client
+> need ≥ 0.153.0, `gpt-6.1-sol` needs ≥ 0.159.0; `gpt-6-luna` needs ≥ 0.155.0). When the request's client
 > identity is missing or too old the backend answers
 > **`Model not found <slug>`** — *not* an entitlement error. shunt avoids this by sending the
 > pinned Codex CLI headers (§4.4). See [openai/codex#31967](https://github.com/openai/codex/issues/31967).

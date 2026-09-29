@@ -757,12 +757,12 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
 > **Client-version gating:** some slugs additionally carry a `minimal_client_version` (e.g.
-> `gpt-6-astra` and `gpt-6.1-sol` require ≥ 0.153.0, `gpt-6-luna` ≥ 0.155.0) and the backend answers
+> `gpt-6-astra` requires ≥ 0.153.0, `gpt-6.1-sol` ≥ 0.159.0, `gpt-6-luna` ≥ 0.155.0) and the backend answers
 > **`Model not found <slug>`** — not an entitlement error — when the request's client identity is
 > missing or too old. The gate keys on the `originator` + `version` headers
 > ([openai/codex#31967](https://github.com/openai/codex/issues/31967)). shunt therefore sends the
 > Codex CLI identity headers (`originator: codex_cli_rs`, `version`, and a matching `user-agent`) on
-> ChatGPT OAuth requests, **pinned to openai/codex rust-v0.156.0**. If a future slug demands a newer
+> ChatGPT OAuth requests, **pinned to openai/codex rust-v0.159.0**. If a future slug demands a newer
 > client, bump the pinned version in `src/adapters/responses/request.rs` (`CODEX_USER_AGENT` /
 > `CODEX_CLIENT_VERSION`).
 
