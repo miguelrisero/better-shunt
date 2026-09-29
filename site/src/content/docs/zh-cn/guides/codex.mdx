@@ -144,10 +144,10 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 
 <Aside type="note" title="`Model not found <slug>` 是客户端版本门控,不是授权问题">
 
-一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 和 `gpt-6.1-sol` 需要 ≥ 0.153.0,`gpt-6-luna` 需要 ≥ 0.155.0)。当
+一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 需要 ≥ 0.153.0,`gpt-6.1-sol` 需要 ≥ 0.159.0,`gpt-6-luna` 需要 ≥ 0.155.0)。当
 请求的客户端身份缺失或过旧时,后端会应答 `Model not found <slug>`。
 shunt 通过发送固定的 Codex CLI 身份头(`originator: codex_cli_rs`、
-`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.156.0**。见
+`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.159.0**。见
 [openai/codex#31967](https://github.com/openai/codex/issues/31967)。
 
 </Aside>
