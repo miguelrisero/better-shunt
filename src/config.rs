@@ -1986,7 +1986,10 @@ fn model_supports_tool_search(model: &str) -> bool {
     }
     // Codex catalog gpt-6 slugs (`supports_search_tool: true`), matched
     // exactly: the catalog lists no gpt-6 family, only these slugs.
-    matches!(model, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
+    matches!(
+        model,
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6.1-sol" | "gpt-6-luna"
+    )
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -10888,8 +10891,10 @@ target = "judge-alias"
         // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
         assert!(config.native_tool_search("codex", "gpt-6-astra"));
         assert!(config.native_tool_search("openai", "gpt-6-astra"));
-        // Codex catalog slugs `gpt-6-sol` and `gpt-6-luna` (same flag).
+        // Codex catalog slugs `gpt-6-sol`, `gpt-6.1-sol` and `gpt-6-luna` (same flag).
         assert!(config.native_tool_search("codex", "gpt-6-sol"));
+        assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
+        assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
         assert!(config.native_tool_search("codex", "gpt-6-luna"));
         for model in [
             "openai/gpt-6-astra",
@@ -10897,12 +10902,17 @@ target = "judge-alias"
             "gpt-6-astra[1m]",
             "not-gpt-6-astra",
             "gpt-6-sol-preview",
+            "gpt-6.1-sol-preview",
+            "gpt-6.10-sol",
             "gpt-6-luna[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }
         let hinted = crate::routing::resolve_model(&config, "gpt-6-astra[1m]");
         assert_eq!(hinted.upstream_model, "gpt-6-astra");
+        assert!(config.native_tool_search("codex", &hinted.upstream_model));
+        let hinted = crate::routing::resolve_model(&config, "gpt-6.1-sol[1m]");
+        assert_eq!(hinted.upstream_model, "gpt-6.1-sol");
         assert!(config.native_tool_search("codex", &hinted.upstream_model));
 
         // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those

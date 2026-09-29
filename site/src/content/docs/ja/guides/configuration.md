@@ -45,9 +45,9 @@ auth = "chatgpt_oauth"         # reuses ~/.codex/auth.json
 
 # 一致する [models.upstream_model] エントリが最初に優先されます。[[routes]] はその次に確認される従来の完全一致形式です。
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"
-# upstream_model = "gpt-6-sol"
+# upstream_model = "gpt-6.1-sol"
 # effort = "high"
 
 # Then prefix match.

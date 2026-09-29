@@ -19,11 +19,13 @@ fork `main`. Changes are deliberately pinned instead of deploying upstream main 
 - Progressive tool discovery and readable tool-reference history on non-Anthropic
   Messages providers ([#424](https://github.com/pleaseai/shunt/issues/424)). No arbitrary
   truncation of the callable catalog.
-- `shunt init` starter example uses `gpt-6-sol`.
+- `gpt-6.1-sol` support: native `tool_search` and the `max` effort level, like `gpt-6-sol`.
+  Older Sol slugs keep working.
+- `shunt init` starter example uses `gpt-6.1-sol`.
 - `tests/compatibility_guards.rs` pins these guards, including the public Neon email pattern.
 - Fork model policy for fork-owned guidance: no Grok subagent plugin, Grok setup
-  guides or Grok example routes, and no `gpt-5.6-sol`/`gpt-5.6-luna` examples or agents.
-  Codex examples use `gpt-6-sol` and `gpt-6-luna`. Upstream xAI/Grok provider code,
+  guides or Grok example routes, and no `gpt-5.6-sol`, `gpt-6-sol` or `gpt-5.6-luna` examples or agents.
+  Codex examples use `gpt-6.1-sol` and `gpt-6-luna`, and Sol examples use at most `high` effort. Upstream xAI/Grok provider code,
   its compiled blueprints and its reference tables remain unchanged.
 
 Upstream v0.48.0 provides the Codex client identity (`0.156.0`), native `tool_search`

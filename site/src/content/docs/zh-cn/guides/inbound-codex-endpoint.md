@@ -156,7 +156,7 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 - **identity 编码。** zstd 请求体会先解码（原生 Responses API 不接受该编码），且不转发 `content-encoding`。
 - **单一凭据，无故障转移。** 被路由到的第三方背后没有账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。
 
-匹配是精确且区分大小写的，并且不限制字符集，所以 `MiniMax-M3`、`openai/gpt-6-sol`、`~openai/gpt-latest` 这类厂商标识都会按写法路由。指向另一个 `chatgpt_oauth` 提供方的路由则仍保留完整的账号池透传。路由从实时配置读取，因此在重载时生效。
+匹配是精确且区分大小写的，并且不限制字符集，所以 `MiniMax-M3`、`openai/gpt-6.1-sol`、`~openai/gpt-latest` 这类厂商标识都会按写法路由。指向另一个 `chatgpt_oauth` 提供方的路由则仍保留完整的账号池透传。路由从实时配置读取，因此在重载时生效。
 
 ## 与 `/v1/messages` 的差异
 

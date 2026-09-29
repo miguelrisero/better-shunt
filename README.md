@@ -56,7 +56,7 @@ afterwards doesn't need a restart — it [hot-reloads](docs/config-reload.md) au
 # shunt.toml — route a gpt-* id to your ChatGPT subscription
 # [[routes]] is legacy for exact ids; prefer [models.upstream_model].
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"        # reuses `codex login`; use `openai` for OPENAI_API_KEY
 ```
 
@@ -65,8 +65,8 @@ codex login                                        # provider credential
 shunt run                                           # -> listening on 127.0.0.1:3001
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
-claude                                              # /model -> pick gpt-6-sol
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
+claude                                              # /model -> pick gpt-6.1-sol
 ```
 
 Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential. Full walkthrough: [Quickstart](https://shunt.sh/getting-started/quickstart/).
@@ -114,7 +114,7 @@ provider = "codex" # defaults to chatgpt_oauth
 id = "claude-opus-4-8"
 [models.upstream_model]
 anthropic-primary = "claude-opus-4-8"
-codex-fallback = "gpt-6-sol"
+codex-fallback = "gpt-6.1-sol"
 ```
 
 This chain tries `anthropic-primary` and then `codex-fallback`. `auth` accepts either a mode string or a map; `claude_oauth` and `chatgpt_oauth` maps can narrow credentials with `account = "name"` or `accounts = [...]`. Legacy `[providers.<name>]` remains supported and becomes implicit name-sorted upstreams. Do not declare both forms: mixing `[[upstreams]]` with `[providers.*]` is a configuration error. See the [configuration reference](https://shunt.sh/reference/configuration/) for presets, failure classes, and migration details.
@@ -238,7 +238,7 @@ Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_UR
 - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. shunt answers with curated `[[models]]` entries plus, while `auto_include_builtin_models` stays `true`, the caller's own live catalog — fetched only when `server.default_provider` is Anthropic-kind, and falling back to a built-in snapshot when it isn't, when no credential is available, or when the fetch fails. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually. See [Model discovery](https://shunt.sh/guides/model-discovery/).
 - **Gateway hint headers** (`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`) — recent Claude Code releases describe each request with `x-claude-code-*` headers. shunt reads five of them into its routing context — the session id, the delegated-agent id, the request class (`main`, `subagent`, `workflow`, `compaction`, `auxiliary`), the agent type, and the one-shot flag marking the first turn after a context compaction — and `GET /protocol` lists them as consumed. The agent-id header is **not** gated by that variable, so on a default deployment a `Task` sub-agent already keeps its own [stage-router](https://shunt.sh/guides/stage-router/) tier pin, separate from the parent session's dwell and escalations, with no client change. Setting `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` on the client additionally sends the other four, which makes the request class authoritative over that agent-id fallback and lets the router hold the turns after a compaction on the capable tier.
 
-- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-6-sol`), given the discovery constraint above.
+- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-6.1-sol`), given the discovery constraint above.
 - **Tool search** (`ENABLE_TOOL_SEARCH`) — Claude Code defers MCP/LSP tool schemas and reveals them on demand, reclaiming context. Because shunt isn't a first-party Anthropic host, Claude Code keeps this **off** unless you opt in. Whether deferral then survives depends on the upstream, not on a setting alone: `claude*` and `anthropic/*` ids keep the protocol byte-for-byte, other ids have their `defer_loading` markers stripped because those hosts reject them, and the Responses path has its own three-state `tool_search` setting. See [Tool search](https://shunt.sh/guides/codex/#tool-search).
 - **Auto mode's server-side classifier** (`dangerous-tool-use-*`) — auto mode asks the API to classify each tool use server-side, at no charge. shunt relays the request and its verdict untouched on Anthropic routes. Where the upstream cannot answer — a translated route, or an Anthropic-protocol third party, none of which is known to accept the field — shunt answers "could not evaluate" per action instead of returning nothing, so the client classifies just that action locally and keeps asking the server on the next turn rather than retiring the feature for the session. See [Troubleshooting](https://shunt.sh/reference/troubleshooting/).
 

@@ -125,7 +125,7 @@ way it would talking to the real ChatGPT backend directly (see
 is byte-exact and case-sensitive: no prefix matching, and no `[1m]` context-window stripping (the
 Codex CLI never appends that hint, so a looser match would only over-capture). Model ids are opaque
 — `.`, `/`, `~`, and mixed case all route as written, which matters because vendor slugs look like
-`openai/gpt-5.6-sol` (Vercel AI Gateway), `~openai/gpt-latest` (OpenRouter), and `MiniMax-M3`
+`openai/gpt-6.1-sol` (Vercel AI Gateway), `~openai/gpt-latest` (OpenRouter), and `MiniMax-M3`
 (MiniMax). A `model` that cannot be read at all never matches a route: `unknown` is a
 shunt-authored label, not a model id, so a route declared for the literal model `unknown` cannot
 capture a malformed body — it falls through to the fixed provider as before.

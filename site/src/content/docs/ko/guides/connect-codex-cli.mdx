@@ -61,7 +61,7 @@ Codex CLI는 사용하는 base URL이 무엇이든 그 뒤에 `/responses`를 �
 ```toml
 # ~/.codex/config.toml
 model_provider = "shunt"          # 활성 프로바이더로 선택
-model = "gpt-6-sol"             # 자격이 부여된 슬러그 — 5단계 참고
+model = "gpt-6.1-sol"             # 자격이 부여된 슬러그 — 5단계 참고
 
 [model_providers.shunt]
 name = "shunt"
@@ -248,7 +248,7 @@ name = "backup"     # 선언한 이름은 모두 위에서 프로비저닝되어
 `~/.codex/config.toml`에서 자격이 부여된 슬러그로 오버라이드하세요:
 
 ```toml
-model = "gpt-6-sol"   # 자격이 부여된 슬러그, *-codex가 아닌 것
+model = "gpt-6.1-sol"   # 자격이 부여된 슬러그, *-codex가 아닌 것
 ```
 
 현재 자격이 부여되는 슬러그는 `gpt-6-astra` / `-sol` / `-luna`, `gpt-5.6-terra`와
@@ -272,7 +272,7 @@ model = "gpt-6-sol"   # 자격이 부여된 슬러그, *-codex가 아닌 것
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -H "content-type: application/json" \
   -H "x-shunt-token: <token>" \
-  -d '{"model":"gpt-6-sol","input":"say hi","stream":true}'
+  -d '{"model":"gpt-6.1-sol","input":"say hi","stream":true}'
 ```
 
 - `content-type: text/event-stream`과 풀 계정 이름을 담은 `x-shunt-account:` 헤더가 있는 `200` ⇒

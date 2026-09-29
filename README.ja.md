@@ -56,7 +56,7 @@ shunt は処理中のリクエストを完了させてから終了します — 
 # shunt.toml — route a gpt-* id to your ChatGPT subscription
 # [[routes]] is legacy for exact ids; prefer [models.upstream_model].
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"        # reuses `codex login`; use `openai` for OPENAI_API_KEY
 ```
 
@@ -65,8 +65,8 @@ codex login                                        # provider credential
 shunt run                                           # -> listening on 127.0.0.1:3001
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
-claude                                              # /model -> pick gpt-6-sol
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
+claude                                              # /model -> pick gpt-6.1-sol
 ```
 
 マッピングされていないモデル（あなたのすべての `claude-*` id）は、これまでとまったく同じように動作します。shunt はあなた自身の認証情報を使って Anthropic へ転送します。詳しい手順は [クイックスタート](https://shunt.sh/getting-started/quickstart/) を参照してください。
@@ -114,7 +114,7 @@ provider = "codex" # defaults to chatgpt_oauth
 id = "claude-opus-4-8"
 [models.upstream_model]
 anthropic-primary = "claude-opus-4-8"
-codex-fallback = "gpt-6-sol"
+codex-fallback = "gpt-6.1-sol"
 ```
 
 このチェーンは `anthropic-primary`、次に `codex-fallback` を試行します。`auth` は mode 文字列またはマップを受け付け、`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で認証情報の範囲を絞れます。レガシーな `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームになります。設定ファイル内で両方の形式を宣言しないでください。`[[upstreams]]` と `[providers.*]` の混在は設定エラーです。preset、失敗クラス、移行の詳細は [設定リファレンス](https://shunt.sh/reference/configuration/) を参照してください。
@@ -238,7 +238,7 @@ Claude Code は `ANTHROPIC_BASE_URL` の背後に**ファーストクラスの�
 - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。shunt はキュレーションされた `[[models]]` エントリーに加え、`auto_include_builtin_models` が `true` の間は呼び出し元のライブカタログを返します。この取得は `server.default_provider` が Anthropic 種別のときのみ行われ、そうでない場合・認証情報がない場合・取得に失敗した場合は組み込みスナップショットにフォールバックします。**制約:** `id` が `claude`/`anthropic` で始まらないエントリーは無視されるため、Claude 系以外のモデルはエイリアスを作るか手動で追加する必要があります。[モデルディスカバリー](https://shunt.sh/ja/guides/model-discovery/)を参照してください。
 - **ゲートウェイヒントヘッダー**（`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`） — 最近の Claude Code は各リクエストを `x-claude-code-*` ヘッダーで説明します。shunt はそのうち 5 つ — セッション id、委譲エージェント id、リクエストクラス（`main`、`subagent`、`workflow`、`compaction`、`auxiliary`）、エージェントタイプ、コンテキストコンパクション直後の最初のターンにだけ一度送られるフラグ — をルーティングコンテキストとして読み取り、`GET /protocol` はそれらを消費ヘッダーとして列挙します。エージェント id ヘッダーはこの変数のゲート対象では**ありません**。そのためデフォルトのデプロイでも、`Task` サブエージェントはクライアントを変更することなく、親セッションの dwell やエスカレーションから独立した自分専用の[ステージルーター](https://shunt.sh/ja/guides/stage-router/)ティアピンを持ちます。クライアントで `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` を設定すると残りの 4 つも送信され、リクエストクラスがエージェント id のフォールバックより優先されるようになり、コンパクション後のターンを強力なティアに保てます。
 
-- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は組み込みエイリアスを置き換えずに、ゲートウェイ経由のエントリーを `/model` ピッカーへ追加します。ID は検証を通らないため、ゲートウェイが受け付ける文字列なら何でも使えます。上記のディスカバリー制約があるため、これが **Claude 系以外のモデルを選ぶ主な方法**です（例: `gpt-6-sol`）。
+- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は組み込みエイリアスを置き換えずに、ゲートウェイ経由のエントリーを `/model` ピッカーへ追加します。ID は検証を通らないため、ゲートウェイが受け付ける文字列なら何でも使えます。上記のディスカバリー制約があるため、これが **Claude 系以外のモデルを選ぶ主な方法**です（例: `gpt-6.1-sol`）。
 - **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、必要になったときに開示してコンテキストを回収します。shunt は Anthropic のファーストパーティホストではないため、自分でオプトインしない限りこの機能は**無効**のままです。オプトイン後に遅延が維持されるかは設定だけでなくアップストリームが決めます。`claude*` と `anthropic/*` の id はプロトコルをバイト単位で維持し、それ以外の id はホストが拒否するため `defer_loading` マーカーが除去され、Responses 経路には独自の 3 状態の `tool_search` 設定があります。[ツール検索](https://shunt.sh/ja/guides/codex/#ツール検索)を参照してください。
 - **auto モードのサーバーサイド分類器**（`dangerous-tool-use-*`） — auto モードは各ツール使用の分類を、追加課金なしで API に依頼します。Anthropic ルートでは、shunt がそのリクエストと判定をそのまま中継します。アップストリームが応答できない場合（翻訳ルート、またはこのフィールドを受け付けると確認できていない Anthropic プロトコルのサードパーティ）、shunt は何も返さない代わりにアクションごとに「評価不能」と応答します。これによりクライアントはそのアクションだけをローカルで分類し、次のターンでも引き続きサーバーに問い合わせるため、セッション中にこの機能を諦めることはありません。[トラブルシューティング](https://shunt.sh/ja/reference/troubleshooting/)を参照してください。
 

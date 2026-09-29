@@ -99,7 +99,7 @@ shunt は `GET /v1/models` を提供するため、Claude Desktop は起動時�
   [[routes]]
   model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
   provider = "codex"
-  upstream_model = "gpt-6-sol"   # real backend slug
+  upstream_model = "gpt-6.1-sol"   # real backend slug
   ```
 
 - **Desktop 側で discovery を上書きする。** shunt がルーティングする正確な id を、明示的な `inferenceModels` リストに指定します。すべてのエントリが完全な id なら、Claude Desktop は `/v1/models` の呼び出しをスキップします。

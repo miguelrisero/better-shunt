@@ -57,7 +57,7 @@ Codex CLI は、使用する base URL が何であれ `/responses` を末尾に�
 ```toml
 # ~/.codex/config.toml
 model_provider = "shunt"          # select it as the active provider
-model = "gpt-6-sol"             # an entitled slug — see step 5
+model = "gpt-6.1-sol"             # an entitled slug — see step 5
 
 [model_providers.shunt]
 name = "shunt"
@@ -237,7 +237,7 @@ entitle されている**スラッグしか受け付けません — `gpt-*-code
 `~/.codex/config.toml` に次のように書きます。
 
 ```toml
-model = "gpt-6-sol"   # entitled slug, not a *-codex one
+model = "gpt-6.1-sol"   # entitled slug, not a *-codex one
 ```
 
 現在 entitle されているスラッグは `gpt-6-astra` / `-sol` / `-luna`、`gpt-5.6-terra` と
@@ -261,7 +261,7 @@ model = "gpt-6-sol"   # entitled slug, not a *-codex one
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -H "content-type: application/json" \
   -H "x-shunt-token: <token>" \
-  -d '{"model":"gpt-6-sol","input":"say hi","stream":true}'
+  -d '{"model":"gpt-6.1-sol","input":"say hi","stream":true}'
 ```
 
 - `content-type: text/event-stream` と、プールアカウント名を持つ `x-shunt-account:` ヘッダーを伴う `200` ⇒ プールがリクエストを処理し、SSE がそのまま中継されています。

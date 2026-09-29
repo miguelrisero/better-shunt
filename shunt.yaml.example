@@ -29,7 +29,7 @@ providers:
 
 # Exact routes take precedence over prefix routes.
 routes:
-  - model: gpt-6-sol
+  - model: gpt-6.1-sol
     provider: codex
 
 route_prefixes:

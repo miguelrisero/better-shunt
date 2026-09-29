@@ -17,14 +17,14 @@ Claude Code は discovery された id が `claude`/`anthropic` で始まらな�
 
 ```toml
 [[models]]
-id = "claude-gpt-6-sol-via-codex"
-display_name = "GPT-6-Sol (via Codex)"
+id = "claude-gpt-6.1-sol-via-codex"
+display_name = "GPT-6.1-Sol (via Codex)"
 
 [models.upstream_model]
-codex = "gpt-6-sol"
+codex = "gpt-6.1-sol"
 ```
 
-このエイリアスを選択すると `codex` へルーティングし、上流には `gpt-6-sol` を送ります。このマップは別の `[[routes]]` エントリより推奨される厳密 id の形式であり、`[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先されます。エントリごとに設定済み provider を1つだけ指定でき、不正なマップや同じ id の `[[routes]]` エントリは起動エラーです。
+このエイリアスを選択すると `codex` へルーティングし、上流には `gpt-6.1-sol` を送ります。このマップは別の `[[routes]]` エントリより推奨される厳密 id の形式であり、`[[routes]]`、`[[route_prefixes]]`、`server.default_provider` より優先されます。エントリごとに設定済み provider を1つだけ指定でき、不正なマップや同じ id の `[[routes]]` エントリは起動エラーです。
 
 ## 別のルートを使う
 
@@ -32,13 +32,13 @@ codex = "gpt-6-sol"
 
 ```toml
 [[models]]
-id = "claude-gpt-6-sol-via-codex"     # must begin with claude/anthropic
-display_name = "GPT-6-Sol (via Codex)"
+id = "claude-gpt-6.1-sol-via-codex"     # must begin with claude/anthropic
+display_name = "GPT-6.1-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-6-sol-via-codex"  # the alias Claude Code sends
+model = "claude-gpt-6.1-sol-via-codex"  # the alias Claude Code sends
 provider = "codex"
-upstream_model = "gpt-6-sol"          # real slug forwarded to the ChatGPT backend
+upstream_model = "gpt-6.1-sol"          # real slug forwarded to the ChatGPT backend
 ```
 
 そして discovery を有効化し（Claude Code v2.1.129+）、shunt + Claude Code を再起動します。
@@ -47,7 +47,7 @@ upstream_model = "gpt-6-sol"          # real slug forwarded to the ChatGPT backe
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
 
-エイリアスは `/model` に *From gateway* とラベル付けされて表示されます。それを選ぶと `claude-gpt-6-sol-via-codex` が送られ、shunt がそれを `codex` へルーティングし、`gpt-6-sol` へ書き換えます。
+エイリアスは `/model` に *From gateway* とラベル付けされて表示されます。それを選ぶと `claude-gpt-6.1-sol-via-codex` が送られ、shunt がそれを `codex` へルーティングし、`gpt-6.1-sol` へ書き換えます。
 
 エイリアスのない `gpt-*` id には、代わりに `ANTHROPIC_CUSTOM_MODEL_OPTION` を使ってください — [Connect Claude Code](/ja/guides/connect-claude-code/#4-マッピングされたモデルを選択する) を参照。
 
@@ -61,7 +61,7 @@ Claude Code は `claude`/`anthropic` で始まる discovery id をすべて受�
 [[routes]]
 model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
 provider = "codex"
-upstream_model = "gpt-6-sol"   # real backend slug
+upstream_model = "gpt-6.1-sol"   # real backend slug
 ```
 
 Desktop でそれを選ぶと、意図した上流へ解決されます。この route はその id に対する組み込みカタログのデフォルトルーティングを上書きするため、バックエンドのマッピングがユーザーにとって意味を保つ tier 名を選んでください。

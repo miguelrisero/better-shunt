@@ -106,7 +106,7 @@ mod는 환경 변수 다섯 개를 읽고 아무것도 쓰지 않습니다. 기�
 
 | 플러그인 | 모델 | 설정 |
 | ------ | ------ | ----- |
-| `shunt-codex` | GPT-6 Sol · Luna, GPT-5.6 Terra | [ChatGPT / Codex](/ko/guides/codex/) |
+| `shunt-codex` | GPT-6.1 Sol, GPT-6 Luna, GPT-5.6 Terra | [ChatGPT / Codex](/ko/guides/codex/) |
 | `shunt-kimi` | Kimi K2.7 Code · K3 | [Kimi](/ko/providers/kimi/) |
 | `shunt-deepseek` | DeepSeek V4 Pro · Flash | [DeepSeek](/ko/providers/deepseek/) |
 | `shunt-zai` | GLM 5.2 · 4.7 | [Z.ai](/ko/providers/zai/) |

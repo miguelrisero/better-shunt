@@ -18,7 +18,7 @@ Codex スラッグがどの reasoning レベルを受け入れるかは、openai
 
 <Aside type="note" title="カスタムモデル id にはフラグが必要">
 
-`gpt-6-sol` のようなカスタムゲートウェイ id には `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定する必要があります — そうしないと Claude Code は、エフォート対応と認識しないモデル id に対して `output_config.effort` を省略し、shunt は `medium` にフォールバックします。
+`gpt-6.1-sol` のようなカスタムゲートウェイ id には `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1` を設定する必要があります — そうしないと Claude Code は、エフォート対応と認識しないモデル id に対して `output_config.effort` を省略し、shunt は `medium` にフォールバックします。
 
 ```bash
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
@@ -44,16 +44,16 @@ shunt での優先順位: 設定の `route.effort` / `[providers.*].effort` オ�
 Claude Code は、アシスタントメッセージのトークン `usage` をモデルのコンテキストウィンドウサイズで割って、コンテキストインジケーターをローカルで計算します。`responses` プロバイダーへルーティングされたモデルの場合:
 
 - **トークンカウント（分子）は正確です。** shunt は Responses の `usage` から `input_tokens` と `input_tokens_details` を読み取り、Anthropic の `message_delta` で転送します。`cached_tokens` は `cache_read_input_tokens` に、`cache_write_tokens` は `cache_creation_input_tokens` に切り分けられ、3 つのフィールドの合計がプロンプト総量と一致します（`cache_write_tokens` を報告しないアップストリームでは `cache_creation_input_tokens` は `0` のままです）。
-- **ウィンドウ（分母）は、認識されない id に対してデフォルトで固定の 200k になります。** より大きな実ウィンドウを持つモデル（例 372k の `gpt-5.6-sol`）は、控えめで過大報告されたパーセンテージを示します — これは自動コンパクトが少し早めにトリガーされるだけです。
+- **ウィンドウ（分母）は、認識されない id に対してデフォルトで固定の 200k になります。** より大きな実ウィンドウを持つモデル（例 272k の `gpt-6.1-sol`）は、控えめで過大報告されたパーセンテージを示します — これは自動コンパクトが少し早めにトリガーされるだけです。
 
 200k のデフォルトは `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（Claude Code 2.1.205+）でクライアント側からオーバーライドできます。これは `claude-` で**始まらない**任意のモデル id に適用されます。
 
 ```bash
-# e.g. gpt-5.6-sol's real window
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000
+# e.g. gpt-6.1-sol's Codex catalog context_window
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000
 ```
 
-オーバーライドは `claude-` で始まらない id **のみ**に適用されるため、[discovery エイリアス](/ja/guides/model-discovery/)（`claude-` で始まる*必要がある*）はこれを取れません — そのウィンドウは 200k デフォルトに固定されたままです。ピッカーでは便利ですが、正確なウィンドウが必要なときは非 `claude-` id（`ANTHROPIC_CUSTOM_MODEL_OPTION` 経由、または [tier エイリアスのリマップ](/ja/guides/codex/#tier-エイリアスを-codex-へリマップする)による）を使ってください。2 つのマッピングされた tier がウィンドウを共有するとき — `gpt-5.6-sol` と `gpt-5.6-luna` はどちらも 372k — 1 つのグローバル値が両方をカバーします。
+オーバーライドは `claude-` で始まらない id **のみ**に適用されるため、[discovery エイリアス](/ja/guides/model-discovery/)（`claude-` で始まる*必要がある*）はこれを取れません — そのウィンドウは 200k デフォルトに固定されたままです。ピッカーでは便利ですが、正確なウィンドウが必要なときは非 `claude-` id（`ANTHROPIC_CUSTOM_MODEL_OPTION` 経由、または [tier エイリアスのリマップ](/ja/guides/codex/#tier-エイリアスを-codex-へリマップする)による）を使ってください。2 つのマッピングされた tier がウィンドウを共有するとき — `gpt-6.1-sol` と `gpt-6-luna` はどちらも 272k — 1 つのグローバル値が両方をカバーします。
 
 
 

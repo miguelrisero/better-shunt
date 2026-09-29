@@ -2254,6 +2254,45 @@ fn an_unheaderable_metadata_session_falls_back_to_the_hash() {
     assert_eq!(key, again["prompt_cache_key"].as_str().unwrap());
 }
 
+/// Prompt caching for a newly launched slug: the cache key and the cached-token
+/// usage mapping must not depend on the model name. Pins `gpt-6.1-sol` on both
+/// Responses flavors so a future slug allow-list cannot silently drop its cache.
+#[test]
+fn gpt_6_1_sol_keeps_prompt_cache_key_and_cached_token_usage() {
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-6.1-sol",
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}
+    }))
+    .unwrap();
+    for flavor in [ResponsesFlavor::Chatgpt, ResponsesFlavor::OpenAi] {
+        let out = translate_request(&body, &route("gpt-6.1-sol"), flavor, false, Some("sess-61"))
+            .unwrap();
+        assert_eq!(out["model"], "gpt-6.1-sol", "{flavor:?}");
+        assert_eq!(out["prompt_cache_key"], "sess-61", "{flavor:?}");
+    }
+
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\",\"usage\":{\"output_tokens\":0}}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"delta\":\"ok\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":800},\"output_tokens\":3}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    assert!(emitted.contains("\"input_tokens\":400"), "{emitted}");
+    assert!(
+        emitted.contains("\"cache_read_input_tokens\":800"),
+        "{emitted}"
+    );
+}
+
 #[test]
 fn inbound_session_id_header_wins_the_prompt_cache_key() {
     // The inbound `x-claude-code-session-id` header is the conversation id

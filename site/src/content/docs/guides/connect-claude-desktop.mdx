@@ -99,7 +99,7 @@ A curated `claude-<slug>-via-<provider>` alias (the pattern that works in Claude
   [[routes]]
   model = "claude-sonnet-5"        # a tier-named id Claude Desktop recognizes
   provider = "codex"
-  upstream_model = "gpt-6-sol"   # real backend slug
+  upstream_model = "gpt-6.1-sol"   # real backend slug
   ```
 
 - **Override discovery on the Desktop side** with an explicit `inferenceModels` list of the exact ids shunt routes on. When every entry is a full id, Claude Desktop skips the `/v1/models` call.

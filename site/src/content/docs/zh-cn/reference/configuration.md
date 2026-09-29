@@ -200,7 +200,7 @@ headers = { "x-api-key" = "..." }
 
 | 键 | 默认值 | 含义 |
 | :-- | :-- | :-- |
-| `model` | *(必填)* | Codex 客户端在 Responses 请求体中发送的公开模型 id。**精确匹配**且**区分大小写** — 没有前缀匹配、不剥离 `[1m]`、也不限制字符集,因此 `MiniMax-M3`、`openai/gpt-6-sol`、`~openai/gpt-latest` 这类厂商 slug 都按原样路由 |
+| `model` | *(必填)* | Codex 客户端在 Responses 请求体中发送的公开模型 id。**精确匹配**且**区分大小写** — 没有前缀匹配、不剥离 `[1m]`、也不限制字符集,因此 `MiniMax-M3`、`openai/gpt-6.1-sol`、`~openai/gpt-latest` 这类厂商 slug 都按原样路由 |
 | `provider` | *(必填)* | 提供该模型的 provider。必须是 `kind = "responses"`,且不能使用不携带凭证的 auth 模式(`passthrough` 或 `none`) |
 | `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
 

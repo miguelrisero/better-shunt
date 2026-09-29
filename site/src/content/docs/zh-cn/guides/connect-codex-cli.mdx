@@ -56,7 +56,7 @@ Codex CLI 会把 `/responses` 追加到它使用的任何 base URL 之后(Codex 
 ```toml
 # ~/.codex/config.toml
 model_provider = "shunt"          # select it as the active provider
-model = "gpt-6-sol"             # an entitled slug — see step 5
+model = "gpt-6.1-sol"             # an entitled slug — see step 5
 
 [model_providers.shunt]
 name = "shunt"
@@ -232,7 +232,7 @@ slug —— 它会以 `400` **拒绝** `gpt-*-codex` 这类 slug(例如 `gpt-5.2
 使用某个 `-codex` 模型,请把它覆盖为一个有权限的 slug,例如写在 `~/.codex/config.toml` 中:
 
 ```toml
-model = "gpt-6-sol"   # entitled slug, not a *-codex one
+model = "gpt-6.1-sol"   # entitled slug, not a *-codex one
 ```
 
 当前有权限的 slug 是 `gpt-6-astra` / `-sol` / `-luna`、`gpt-5.6-terra` 以及
@@ -254,7 +254,7 @@ model = "gpt-6-sol"   # entitled slug, not a *-codex one
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -H "content-type: application/json" \
   -H "x-shunt-token: <token>" \
-  -d '{"model":"gpt-6-sol","input":"say hi","stream":true}'
+  -d '{"model":"gpt-6.1-sol","input":"say hi","stream":true}'
 ```
 
 - 返回 `200`,带 `content-type: text/event-stream` 和标注池账户名的 `x-shunt-account:` 头部 ⇒ 池已服务

@@ -274,11 +274,11 @@ provider = "openai"
 # account's live-entitled slugs. The catalog of valid Codex slugs (and the
 # reasoning levels each accepts) is openai/codex's models.json:
 #   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
-# The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna, then gpt-6-sol /
-# gpt-5.6-terra / gpt-6-luna; older accounts may only be entitled to gpt-5.5 /
+# The latest are gpt-6-astra / gpt-6.1-sol / gpt-6-luna, then
+# gpt-5.6-terra; older accounts may only be entitled to gpt-5.5 /
 # gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
-# model = "gpt-6-sol"
+# model = "gpt-6.1-sol"
 # provider = "codex"
 
 # Example C — route to Cursor. Prefixes select agent mode and the suffix is the
@@ -310,13 +310,13 @@ provider = "openai"
 # [[routes]] entry rewrites it to the real upstream slug. It then shows in /model
 # labeled "From gateway". Requires CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1.
 # [[models]]
-# id = "claude-gpt-6-sol-via-codex"    # must begin with claude/anthropic
-# display_name = "GPT-6-Sol (via Codex)"
+# id = "claude-gpt-6.1-sol-via-codex"    # must begin with claude/anthropic
+# display_name = "GPT-6.1-Sol (via Codex)"
 #
 # [[routes]]
-# model = "claude-gpt-6-sol-via-codex" # the alias Claude Code sends
+# model = "claude-gpt-6.1-sol-via-codex" # the alias Claude Code sends
 # provider = "codex"
-# upstream_model = "gpt-6-sol"         # real slug forwarded upstream (see models.json)
+# upstream_model = "gpt-6.1-sol"         # real slug forwarded upstream (see models.json)
 
 # Content-aware tier selection (opt-in).
 #

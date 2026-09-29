@@ -268,15 +268,15 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
 
 - The authoritative catalog of Codex slugs (and the reasoning levels each accepts) is openai/codex's
   [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-- Current listed slugs: **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
-  **`gpt-6-sol`**, **`gpt-5.6-terra`**, **`gpt-6-luna`** (frontier), and **`gpt-5.5`** /
+- Current listed slugs: **`gpt-6-astra`**, **`gpt-6.1-sol`**, **`gpt-6-luna`** (latest),
+  **`gpt-5.6-terra`** (frontier), and **`gpt-5.5`** /
   **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**. Older accounts may only be entitled to the
   earlier ones; a **free** account has resolved to `gpt-5.5` in testing.
 - To see what your account can use, look at what the `codex` CLI itself sends, or the live
   `/models` fetch it performs at startup.
 
 > **Client-version gating.** Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra`
-> needs ≥ 0.153.0; `gpt-6-sol` and `gpt-6-luna` need ≥ 0.155.0). When the request's client
+> and `gpt-6.1-sol` need ≥ 0.153.0; `gpt-6-luna` needs ≥ 0.155.0). When the request's client
 > identity is missing or too old the backend answers
 > **`Model not found <slug>`** — *not* an entitlement error. shunt avoids this by sending the
 > pinned Codex CLI headers (§4.4). See [openai/codex#31967](https://github.com/openai/codex/issues/31967).
@@ -295,9 +295,9 @@ A request's `model` id selects the provider. Precedence: matching `[models.upstr
 
 ```toml
 [[routes]]
-model = "gpt-6-sol"     # the id Claude Code sends (see §7)
+model = "gpt-6.1-sol"     # the id Claude Code sends (see §7)
 provider = "codex"
-# upstream_model = "gpt-6-sol"   # optional: rewrite to a different slug upstream
+# upstream_model = "gpt-6.1-sol"   # optional: rewrite to a different slug upstream
 # effort = "high"                  # optional: pin effort for this route (see §8)
 ```
 
@@ -324,7 +324,7 @@ Claude Code's `/model` picker only honors discovery ids that begin with `claude`
 a raw `gpt-*` id needs one of two paths (or remap the tier aliases entirely — §7.4). **They don't
 overlap** — the split is on the `claude-`/`anthropic-` prefix:
 
-| What | `claude-…` discovery alias | non-`claude-` id (e.g. `gpt-6-sol`) |
+| What | `claude-…` discovery alias | non-`claude-` id (e.g. `gpt-6.1-sol`) |
 | :-- | :-- | :-- |
 | `/v1/models` discovery → `/model` picker | ✅ auto-listed ("From gateway"), many models | ❌ dropped by Claude Code |
 | `ANTHROPIC_CUSTOM_MODEL_OPTION` | ❌ not honored | ✅ adds to picker (**one id only**) |
@@ -333,7 +333,7 @@ overlap** — the split is on the `claude-`/`anthropic-` prefix:
 ### 7.1 Primary path — `ANTHROPIC_CUSTOM_MODEL_OPTION`
 
 ```bash
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
 ```
 
 Adds a picker entry whose id skips validation; that id is exactly what shunt routes on, so it
@@ -348,13 +348,13 @@ alias and rewrite it upstream:
 
 ```toml
 [[models]]
-id = "claude-gpt-6-sol-via-codex"     # MUST begin with claude/anthropic
-display_name = "GPT-6-Sol (via Codex)"
+id = "claude-gpt-6.1-sol-via-codex"     # MUST begin with claude/anthropic
+display_name = "GPT-6.1-Sol (via Codex)"
 
 [[routes]]
-model = "claude-gpt-6-sol-via-codex"  # the alias Claude Code sends
+model = "claude-gpt-6.1-sol-via-codex"  # the alias Claude Code sends
 provider = "codex"
-upstream_model = "gpt-6-sol"          # real slug forwarded to the ChatGPT backend
+upstream_model = "gpt-6.1-sol"          # real slug forwarded to the ChatGPT backend
 ```
 
 ```bash
@@ -375,13 +375,13 @@ frontmatter field is the key: it accepts **any string** (unlike the Agent/Task t
 parameter, which only takes the built-in aliases `opus`/`sonnet`/`haiku`/`fable`).
 
 **Point an existing subagent at a Codex slug** — edit its `.claude/agents/<name>.md` frontmatter
-and set (or add) `model:`. For example, to move an existing `researcher` agent onto `gpt-6-sol`:
+and set (or add) `model:`. For example, to move an existing `researcher` agent onto `gpt-6.1-sol`:
 
 ```markdown
 ---
 name: researcher
 description: Deep research agent.
-model: gpt-6-sol        # was: sonnet (or absent → inherited)
+model: gpt-6.1-sol        # was: sonnet (or absent → inherited)
 ---
 
 <the agent's system prompt — unchanged>
@@ -394,7 +394,7 @@ so passing one would shadow the slug. Resolution order:
 **Force every subagent onto one Codex slug** — set the env var (highest precedence, global):
 
 ```bash
-export CLAUDE_CODE_SUBAGENT_MODEL="gpt-6-sol"
+export CLAUDE_CODE_SUBAGENT_MODEL="gpt-6.1-sol"
 ```
 
 Either way the id must resolve through a matching `[models.upstream_model]` entry, `[[routes]]`, or
@@ -404,7 +404,7 @@ window follows the id automatically, so one global value sizes the mapped subage
 main keeps its own.
 
 The **[`shunt-codex` plugin](../plugins/shunt-codex/)** ships ready-made subagents for
-`gpt-6-sol` / `-luna` and `gpt-5.6-terra` (each pins its `model:` frontmatter
+`gpt-6.1-sol`, `gpt-6-luna` and `gpt-5.6-terra` (each pins its `model:` frontmatter
 to the slug), so you can
 `@`-mention a Codex model without authoring the agent files yourself.
 
@@ -421,11 +421,11 @@ slugs, so the whole session's tier system resolves to your ChatGPT subscription
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | what the `opus` alias resolves to |
 | `ANTHROPIC_DEFAULT_FABLE_MODEL` | what the `fable` alias resolves to |
 
-**Example — the two-tier setup** (`haiku → gpt-6-luna`, `sonnet → gpt-6-sol`):
+**Example — the two-tier setup** (`haiku → gpt-6-luna`, `sonnet → gpt-6.1-sol`):
 
 ```bash
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="gpt-6-luna"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-6-sol"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-6.1-sol"
 ```
 
 ```toml
@@ -435,19 +435,19 @@ model = "gpt-6-luna"
 provider = "codex"
 
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"
 ```
 
-Now selecting **Sonnet** in `/model` runs `gpt-6-sol` via Codex, and every background/haiku task
-runs `gpt-6-luna`. The resolved id (`gpt-6-sol` / `gpt-6-luna`) is exactly what shunt routes
+Now selecting **Sonnet** in `/model` runs `gpt-6.1-sol` via Codex, and every background/haiku task
+runs `gpt-6-luna`. The resolved id (`gpt-6.1-sol` / `gpt-6-luna`) is exactly what shunt routes
 on — no `ANTHROPIC_CUSTOM_MODEL_OPTION` needed.
 
 **Nicer picker labels** — the `_NAME` / `_DESCRIPTION` companions take effect on a gateway
 (`ANTHROPIC_BASE_URL` → shunt), so the raw slug isn't shown as-is:
 
 ```bash
-export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="GPT-6-Sol"
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME="GPT-6.1-Sol"
 export ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION="ChatGPT/Codex Sol via shunt"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="GPT-6-Luna"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION="ChatGPT/Codex Luna via shunt (background tier)"
@@ -456,7 +456,7 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION="ChatGPT/Codex Luna via shunt (
 Things to get right:
 
 - **These ids don't start with `claude-`**, so `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (§10) applies.
-  They already send effort without a flag (§8). Handily, `gpt-6-sol` and
+  They already send effort without a flag (§8). Handily, `gpt-6.1-sol` and
   `gpt-6-luna` share the Codex catalog `context_window` of **272k**, so one global
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000` fits both tiers.
 - **The `_SUPPORTED_CAPABILITIES` companion is documented for third-party providers (Bedrock, etc.),
@@ -488,7 +488,7 @@ Claude Code's effort level (`/effort`, the `/model` slider, `--effort`, or
 `src/model/responses_request.rs`), because `models.json` `supported_reasoning_levels` caps
 `gpt-5.5`/`5.4`/`5.2` at `xhigh` while the gpt-5.6 and gpt-6 families accept `max`.
 
-> **Custom gateway ids carry effort on their own.** Verified on the wire against Claude Code v2.1.224: an id like `gpt-5.6-sol` already sends
+> **Custom gateway ids carry effort on their own.** Verified on the wire against Claude Code v2.1.224: an id like `gpt-6.1-sol` already sends
 > `output_config.effort` with `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` unset, and setting it to `1`
 > produces a byte-identical request. The flag applies to non-first-party providers (Bedrock, Vertex,
 > Foundry, gateway login).
@@ -525,7 +525,7 @@ exactly parallel to `effort` (§8):
 
 ```toml
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"
 # service_tier = "priority"         # optional: pin service_tier for this route
 ```
@@ -565,13 +565,13 @@ Claude Code computes the context indicator **locally**: `usage` tokens ÷ the mo
   `cache_creation_input_tokens` at `0`.
 - **Denominator defaults to 200k for mapped ids.** Claude Code's `getContextWindowForModel`
   returns `200_000` for any id it doesn't recognize (its accurate per-model lookup only runs when
-  the base URL is `api.anthropic.com`). A larger real window (e.g. `gpt-5.6-sol` at 372k) shows a
+  the base URL is `api.anthropic.com`). A larger real window (e.g. `gpt-6.1-sol` at 272k) shows a
   conservative, over-reported percentage — harmless except that auto-compact triggers early.
 
 Override the denominator for non-`claude-` ids (verified in Claude Code 2.1.205):
 
 ```bash
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=372000   # gpt-5.6-sol's real window
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000   # gpt-6.1-sol's Codex catalog context_window
 ```
 
 Caveats:
@@ -588,7 +588,7 @@ Caveats:
   window stays at 200k. Use a non-`claude-` id for the accurate window.
 
 The `[1m]` id suffix forces a 1M window client-side; shunt strips a trailing `[1m]` before route
-matching and before forwarding upstream, so `gpt-6-sol[1m]` still routes correctly. Only use it
+matching and before forwarding upstream, so `gpt-6.1-sol[1m]` still routes correctly. Only use it
 if the upstream genuinely has a 1M window, or it under-reports.
 
 | Field | Codex (`responses`) model | Claude passthrough |
@@ -707,7 +707,7 @@ effort = "high"
 # count_tokens = "tiktoken"   # default
 
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"
 ```
 
@@ -722,11 +722,11 @@ codex login
 
 # In the Claude Code environment
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"   # add gpt-6-sol to the picker
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000         # gpt-6-sol's Codex catalog context_window
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"   # add gpt-6.1-sol to the picker
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000         # gpt-6.1-sol's Codex catalog context_window
 ```
 
-Then pick **gpt-6-sol** from `/model`. Everything else in the session still flows to Anthropic
+Then pick **gpt-6.1-sol** from `/model`. Everything else in the session still flows to Anthropic
 unchanged; only the mapped model's inference is answered by your ChatGPT/Codex subscription.
 
 ---
@@ -857,8 +857,8 @@ feature targets (base URLs as the vendor documents them for Codex):
 | MiniMax Token Plan | `https://api.minimax.io/v1` | `MiniMax-M3` |
 | Mimo Token Plan | `https://api.xiaomimimo.com/v1` | `mimo-v2.5-pro`, `mimo-v2.5` |
 | OpenRouter | `https://openrouter.ai/api/v1` | `~openai/gpt-latest` |
-| Vercel AI Gateway | `https://ai-gateway.vercel.sh/codex/v1` | `openai/gpt-6-sol` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-6-sol` |
+| Vercel AI Gateway | `https://ai-gateway.vercel.sh/codex/v1` | `openai/gpt-6.1-sol` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-6.1-sol` |
 
 shunt appends `/responses` to a provider's `base_url`, so give it the **same** base URL the vendor
 documents for Codex. The provider must expose a native Responses API — there is no Responses → Chat
@@ -930,7 +930,7 @@ its own at `~/.codex/model-catalogs/model-catalogs.json`). Only the `model` valu
 route.
 
 Route matching is **exact and case-sensitive**, with no charset restriction, so mixed-case and
-slash- or `~`-qualified vendor slugs (`MiniMax-M3`, `openai/gpt-6-sol`, `~openai/gpt-latest`)
+slash- or `~`-qualified vendor slugs (`MiniMax-M3`, `openai/gpt-6.1-sol`, `~openai/gpt-latest`)
 route as written.
 
 A routed request to a non-ChatGPT upstream sends only `content-type` and `accept` from the client

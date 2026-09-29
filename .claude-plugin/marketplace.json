@@ -18,8 +18,8 @@
     {
       "name": "shunt-codex",
       "source": "./plugins/shunt-codex",
-      "description": "Subagents on ChatGPT/Codex models (GPT-6-Sol, GPT-6-Luna, GPT-5.6-Terra), routed through shunt at the inference layer.",
-      "keywords": ["codex", "chatgpt", "gpt-6", "gpt-5.6"]
+      "description": "Subagents on ChatGPT/Codex models (GPT-6.1-Sol, GPT-6-Luna, GPT-5.6-Terra), routed through shunt at the inference layer.",
+      "keywords": ["codex", "chatgpt", "gpt-6.1", "gpt-6", "gpt-5.6"]
     },
     {
       "name": "shunt-kimi",
