@@ -61,7 +61,7 @@ it supports either way of presenting the shunt token (step 3):
 ```toml
 # ~/.codex/config.toml
 model_provider = "shunt"          # select it as the active provider
-model = "gpt-6-sol"             # an entitled slug — see step 5
+model = "gpt-6.1-sol"             # an entitled slug — see step 5
 
 [model_providers.shunt]
 name = "shunt"
@@ -248,7 +248,7 @@ accepts the slugs your account is **currently entitled** to — it **rejects** `
 an entitled slug, e.g. in `~/.codex/config.toml`:
 
 ```toml
-model = "gpt-6-sol"   # entitled slug, not a *-codex one
+model = "gpt-6.1-sol"   # entitled slug, not a *-codex one
 ```
 
 Current entitled slugs are `gpt-6-astra` / `-sol` / `-luna`, `gpt-5.6-terra`,
@@ -271,7 +271,7 @@ winning upstream before committing, so the header names the account that actuall
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -H "content-type: application/json" \
   -H "x-shunt-token: <token>" \
-  -d '{"model":"gpt-6-sol","input":"say hi","stream":true}'
+  -d '{"model":"gpt-6.1-sol","input":"say hi","stream":true}'
 ```
 
 - A `200` with `content-type: text/event-stream` and an `x-shunt-account:` header naming the pool

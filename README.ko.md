@@ -57,7 +57,7 @@ Unix에서는 종료가 시작될 때 Antigravity 에이전트 턴이 함께 종
 # shunt.toml — gpt-* id를 ChatGPT 구독으로 라우팅
 # [[routes]]는 정확한 id를 위한 레거시 방식입니다. [models.upstream_model]을 권장합니다.
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"        # `codex login`을 재사용; OPENAI_API_KEY를 쓰려면 `openai` 사용
 ```
 
@@ -66,8 +66,8 @@ codex login                                        # 프로바이더 자격 증�
 shunt run                                           # -> 127.0.0.1:3001 에서 리슨
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
-claude                                              # /model -> gpt-6-sol 선택
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
+claude                                              # /model -> gpt-6.1-sol 선택
 ```
 
 매핑되지 않은 모델(모든 `claude-*` id)은 이전과 완전히 동일하게 동작합니다. shunt가 사용자 본인의 자격 증명으로 Anthropic에 전달합니다. 전체 안내: [빠른 시작](https://shunt.sh/getting-started/quickstart/).
@@ -115,7 +115,7 @@ provider = "codex" # defaults to chatgpt_oauth
 id = "claude-opus-4-8"
 [models.upstream_model]
 anthropic-primary = "claude-opus-4-8"
-codex-fallback = "gpt-6-sol"
+codex-fallback = "gpt-6.1-sol"
 ```
 
 이 체인은 `anthropic-primary`를 먼저 시도한 다음 `codex-fallback`을 시도합니다. `auth`는 mode 문자열 또는 맵을 받으며, `claude_oauth`와 `chatgpt_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 자격 증명 범위를 좁힐 수 있습니다. 레거시 `[providers.<name>]`는 계속 지원되며 이름순의 암시적 업스트림이 됩니다. 구성 파일에서 두 형식을 함께 선언하지 마세요. `[[upstreams]]`와 `[providers.*]`를 혼합하면 구성 오류입니다. preset, 실패 클래스, 마이그레이션 세부 사항은 [구성 레퍼런스](https://shunt.sh/reference/configuration/)를 참고하세요.
@@ -239,7 +239,7 @@ Claude Code는 `ANTHROPIC_BASE_URL` 뒤에 **1급 게이트웨이 계약**을 �
 - [모델 디스커버리](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code는 시작 시 `GET /v1/models?limit=1000`을 조회해(`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`로 옵트인) 반환된 모델을 `/model` 선택기에 추가합니다. shunt는 큐레이션된 `[[models]]` 항목에 더해, `auto_include_builtin_models`가 `true`인 동안에는 호출자의 라이브 카탈로그로 응답합니다 — 이 조회는 `server.default_provider`가 Anthropic 종류일 때만 이뤄지며, 그렇지 않거나 크리덴셜이 없거나 조회가 실패하면 내장 스냅샷으로 대체됩니다. **제약:** `id`가 `claude`/`anthropic`으로 시작하지 않는 항목은 무시되므로, Claude 계열이 아닌 모델은 별칭을 만들거나 수동으로 추가해야 합니다. [모델 디스커버리](https://shunt.sh/ko/guides/model-discovery/)를 참고하세요.
 - **게이트웨이 힌트 헤더**(`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`) — 최근 Claude Code는 매 요청을 `x-claude-code-*` 헤더로 설명합니다. shunt는 그중 다섯 개를 라우팅 컨텍스트로 읽어 들입니다 — 세션 id, 위임된 에이전트 id, 요청 종류(`main`, `subagent`, `workflow`, `compaction`, `auxiliary`), 에이전트 타입, 그리고 컨텍스트 컴팩션 직후 첫 턴에만 한 번 실리는 플래그입니다. `GET /protocol`은 이들을 소비 헤더로 명시합니다. 에이전트 id 헤더는 이 변수의 게이트를 받지 **않으므로**, 기본 배포에서도 `Task` 서브에이전트는 클라이언트를 바꾸지 않은 채 부모 세션과 분리된 자체 [스테이지 라우터](https://shunt.sh/ko/guides/stage-router/) 티어 핀을 갖습니다(부모의 dwell과 승급이 오염되지 않습니다). 클라이언트에서 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`을 설정하면 나머지 네 개도 전송되어, 요청 종류가 에이전트 id 폴백보다 우선하게 되고 컴팩션 이후의 턴들을 강한 티어에 유지할 수 있습니다.
 
-- [커스텀 모델 옵션 추가](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION`은 내장 별칭을 대체하지 않으면서 게이트웨이로 라우팅되는 항목을 `/model` 선택기에 추가합니다. ID는 검증을 거치지 않으므로 게이트웨이가 받아들이는 문자열이면 무엇이든 됩니다. 위의 디스커버리 제약 때문에 **Claude 계열이 아닌 모델을 고르는 주된 방법**입니다(예: `gpt-6-sol`).
+- [커스텀 모델 옵션 추가](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION`은 내장 별칭을 대체하지 않으면서 게이트웨이로 라우팅되는 항목을 `/model` 선택기에 추가합니다. ID는 검증을 거치지 않으므로 게이트웨이가 받아들이는 문자열이면 무엇이든 됩니다. 위의 디스커버리 제약 때문에 **Claude 계열이 아닌 모델을 고르는 주된 방법**입니다(예: `gpt-6.1-sol`).
 - **도구 검색**(`ENABLE_TOOL_SEARCH`) — Claude Code는 MCP/LSP 도구 스키마를 지연시켰다가 필요할 때 드러내어 컨텍스트를 회수합니다. shunt는 Anthropic 1급 호스트가 아니므로 직접 옵트인하지 않는 한 이 기능은 **꺼진 상태**입니다. 옵트인 후 지연이 유지되는지는 설정이 아니라 업스트림이 결정합니다. `claude*`와 `anthropic/*` id는 프로토콜을 바이트 단위로 유지하고, 그 외 id는 해당 호스트가 거부하므로 `defer_loading` 표식이 제거되며, Responses 경로에는 자체적인 3-상태 `tool_search` 설정이 있습니다. [도구 검색](https://shunt.sh/ko/guides/codex/#도구-검색)을 참고하세요.
 - **auto mode의 서버측 분류기**(`dangerous-tool-use-*`) — auto mode는 각 도구 사용의 분류를 무과금으로 API에 맡깁니다. Anthropic 라우트에서는 shunt가 요청과 판정을 그대로 중계합니다. 업스트림이 답할 수 없는 경우 — 번역 라우트이거나, 이 필드를 받아들이는 것으로 확인된 곳이 없는 Anthropic 프로토콜 서드파티인 경우 — shunt는 아무것도 돌려주지 않는 대신 동작마다 "평가 불가"로 답합니다. 그러면 클라이언트는 그 동작 하나만 로컬에서 분류하고 다음 턴에 다시 서버에 요청하므로, 세션 내내 이 기능을 포기하지 않습니다. [문제 해결](https://shunt.sh/ko/reference/troubleshooting/)을 참고하세요.
 

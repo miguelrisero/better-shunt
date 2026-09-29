@@ -12,7 +12,7 @@ shunt 出厂即预配置好所有提供方,因此一份最小配置只需声明�
 ```toml
 # 精确模型 id -> 提供方
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"     # 通过 `codex login` 复用你的 ChatGPT 登录
 
 # 或者把每个 gpt-* id 都发送到 OpenAI API
@@ -49,12 +49,12 @@ shunt run
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1   # 使 /effort 映射到 reasoning.effort
 claude
 ```
 
-在 Claude Code 中运行 `/model` 并选择 `gpt-6-sol`。未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。
+在 Claude Code 中运行 `/model` 并选择 `gpt-6.1-sol`。未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。
 
 ## 5. 验证
 
@@ -65,7 +65,7 @@ claude
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6.1-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 一个以 `{"id":"msg_` 开头的 JSON 响应意味着它成功了。在 Claude Code 中,`/status` 应把 **Anthropic base URL** 显示为 `http://127.0.0.1:3001`。

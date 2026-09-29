@@ -31,9 +31,9 @@ const DEFAULT_BODY: &str = "# An empty config is already a working gateway: unma
 # Map a public model id onto upstream backends:\n\
 #\n\
 # [[models]]\n\
-# id = \"gpt-6-sol\"\n\
+# id = \"gpt-6.1-sol\"\n\
 # [models.upstream_model]\n\
-# codex = \"gpt-6-sol\"\n";
+# codex = \"gpt-6.1-sol\"\n";
 
 /// Create a starter `shunt.toml` and return the path written.
 pub fn write_starter(

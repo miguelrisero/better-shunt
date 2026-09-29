@@ -106,7 +106,7 @@ mod は環境変数を 5 つ読み、どれにも書き込みません。既定�
 
 | プラグイン | モデル | セットアップ |
 | ------ | ------ | ----- |
-| `shunt-codex` | GPT-6 Sol · Luna、GPT-5.6 Terra | [ChatGPT / Codex](/ja/guides/codex/) |
+| `shunt-codex` | GPT-6.1 Sol、GPT-6 Luna、GPT-5.6 Terra | [ChatGPT / Codex](/ja/guides/codex/) |
 | `shunt-kimi` | Kimi K2.7 Code · K3 | [Kimi](/ja/providers/kimi/) |
 | `shunt-deepseek` | DeepSeek V4 Pro · Flash | [DeepSeek](/ja/providers/deepseek/) |
 | `shunt-zai` | GLM 5.2 · 4.7 | [Z.ai](/ja/providers/zai/) |

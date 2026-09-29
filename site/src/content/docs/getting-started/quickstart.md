@@ -12,7 +12,7 @@ shunt ships with all providers preconfigured, so a minimal config only declares 
 ```toml
 # Exact model id -> provider
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"     # reuses your ChatGPT login via `codex login`
 
 # Or send every gpt-* id to the OpenAI API
@@ -49,11 +49,11 @@ shunt run
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
 claude
 ```
 
-Inside Claude Code, run `/model` and pick `gpt-6-sol`. Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential.
+Inside Claude Code, run `/model` and pick `gpt-6.1-sol`. Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential.
 
 ## 5. Verify
 
@@ -64,7 +64,7 @@ Test the gateway directly before (or instead of) opening Claude Code:
 curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"gpt-6-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gpt-6.1-sol","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 A JSON response starting with `{"id":"msg_` means it worked. Inside Claude Code, `/status` should show the **Anthropic base URL** as `http://127.0.0.1:3001`.

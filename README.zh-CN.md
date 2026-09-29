@@ -54,7 +54,7 @@ shunt 会先处理完正在进行的请求再退出 —— 最多等待 `[server
 # shunt.toml —— 将一个 gpt-* id 路由到你的 ChatGPT 订阅
 # [[routes]] 是用于精确 id 的旧式写法;建议优先使用 [models.upstream_model]。
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"        # 复用 `codex login`;使用 `openai` 则读取 OPENAI_API_KEY
 ```
 
@@ -63,8 +63,8 @@ codex login                                        # 提供方凭据
 shunt run                                           # -> listening on 127.0.0.1:3001
 
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6-sol"
-claude                                              # /model -> 选择 gpt-6-sol
+export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-6.1-sol"
+claude                                              # /model -> 选择 gpt-6.1-sol
 ```
 
 未映射的模型(你所有的 `claude-*` id)会完全照旧工作 —— shunt 使用你自己的凭据将它们转发给 Anthropic。完整演练见 [快速开始](https://shunt.sh/getting-started/quickstart/)。
@@ -112,7 +112,7 @@ provider = "codex" # defaults to chatgpt_oauth
 id = "claude-opus-4-8"
 [models.upstream_model]
 anthropic-primary = "claude-opus-4-8"
-codex-fallback = "gpt-6-sol"
+codex-fallback = "gpt-6.1-sol"
 ```
 
 该链先尝试 `anthropic-primary`，再尝试 `codex-fallback`。`auth` 接受 mode 字符串或映射；`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小凭据范围。旧式 `[providers.<name>]` 仍受支持，并会成为按名称排序的隐式上游。不要在配置文件中同时声明两种形式；混用 `[[upstreams]]` 与 `[providers.*]` 会导致配置错误。有关 preset、失败类别和迁移细节，请参阅[配置参考](https://shunt.sh/reference/configuration/)。
@@ -236,7 +236,7 @@ Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关�
 - [模型发现](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) —— Claude Code 在启动时查询 `GET /v1/models?limit=1000`(通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 选择加入),并把返回的模型加入 `/model` 选择器。shunt 会返回精选的 `[[models]]` 条目,并在 `auto_include_builtin_models` 仍为 `true` 时附上调用方的实时目录 —— 仅当 `server.default_provider` 为 Anthropic 类型时才会拉取,否则(或缺少凭据、拉取失败时)回退到内置快照。**约束:** `id` 不以 `claude`/`anthropic` 开头的条目会被忽略 —— 非 Claude 模型必须设置别名或手动添加。参见[模型发现](https://shunt.sh/zh-cn/guides/model-discovery/)。
 - **网关提示头**(`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`)—— 较新的 Claude Code 会用 `x-claude-code-*` 头描述每个请求。shunt 把其中五个读入自己的路由上下文 —— 会话 id、被委派的 agent id、请求类别(`main`、`subagent`、`workflow`、`compaction`、`auxiliary`)、agent 类型,以及仅在上下文压缩后第一轮发送一次的标记 —— 并由 `GET /protocol` 将它们列为消费头。agent id 这个头**不受该变量控制**,因此在默认部署下,`Task` 子 agent 无需改动客户端就已经拥有独立于父会话 dwell 与升档的自有[阶段路由器](https://shunt.sh/zh-cn/guides/stage-router/)档位固定。在客户端设置 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` 后会额外发送其余四个,使请求类别优先于 agent id 回退规则,并让路由器把压缩之后的若干轮保持在强力档位。
 
-- [添加自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) —— `ANTHROPIC_CUSTOM_MODEL_OPTION` 会在不替换内置别名的前提下,向 `/model` 选择器添加一个经网关路由的条目;该 ID 不做校验,因此网关接受的任何字符串都可用。鉴于上面的发现约束,**这是选择非 Claude 模型的主要方式**(例如 `gpt-6-sol`)。
+- [添加自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) —— `ANTHROPIC_CUSTOM_MODEL_OPTION` 会在不替换内置别名的前提下,向 `/model` 选择器添加一个经网关路由的条目;该 ID 不做校验,因此网关接受的任何字符串都可用。鉴于上面的发现约束,**这是选择非 Claude 模型的主要方式**(例如 `gpt-6.1-sol`)。
 - **工具搜索**(`ENABLE_TOOL_SEARCH`)—— Claude Code 会延迟加载 MCP/LSP 工具 schema,按需揭示,从而回收上下文。由于 shunt 不是 Anthropic 第一方主机,除非你主动开启,Claude Code 会保持其**关闭**。开启后延迟能否保留取决于上游而不只是设置:`claude*` 和 `anthropic/*` id 会逐字节保留该协议,其他 id 的 `defer_loading` 标记会被剥离(因为这些主机会拒绝),而 Responses 路径有自己的三态 `tool_search` 设置。参见[工具搜索](https://shunt.sh/zh-cn/guides/codex/#工具搜索)。
 - **auto 模式的服务端分类器**(`dangerous-tool-use-*`)—— auto 模式会免费请求 API 在服务端对每次工具使用进行分类。在 Anthropic 路由上,shunt 原样中继该请求及其判定。当上游无法作答时(翻译路由,或尚未确认接受该字段的 Anthropic 协议第三方),shunt 不是什么都不返回,而是逐个动作回复“无法评估”,于是客户端只在本地分类那一个动作,并在下一轮继续询问服务端,而不会在整个会话中放弃该功能。参见[故障排查](https://shunt.sh/zh-cn/reference/troubleshooting/)。
 

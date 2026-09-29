@@ -1181,6 +1181,7 @@ mod tests {
         let request = json!({"output_config": {"effort": "max"}});
         assert_eq!(effort(&request, &codex_route_model("gpt-6-astra")), "max");
         assert_eq!(effort(&request, &codex_route_model("gpt-6-sol")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6.1-sol")), "max");
         assert_eq!(effort(&request, &codex_route_model("gpt-6-luna")), "max");
         assert_eq!(effort(&request, &codex_route_model("gpt-6-pro")), "max");
     }

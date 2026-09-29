@@ -45,9 +45,9 @@ auth = "chatgpt_oauth"         # 复用 ~/.codex/auth.json
 
 # 匹配的 [models.upstream_model] 条目最先胜出。[[routes]] 是随后检查的旧版精确匹配形式。
 [[routes]]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 provider = "codex"
-# upstream_model = "gpt-6-sol"
+# upstream_model = "gpt-6.1-sol"
 # effort = "high"
 
 # 然后是前缀匹配。

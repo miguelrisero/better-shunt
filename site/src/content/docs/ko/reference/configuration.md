@@ -201,7 +201,7 @@ headers = { "x-api-key" = "..." }
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `model` | *(필수)* | Codex 클라이언트가 Responses 본문에 보내는 공개 모델 id. **정확 일치**이며 **대소문자를 구분**합니다 — prefix 매칭도, `[1m]` 제거도, 문자 집합 제한도 없으므로 `MiniMax-M3`, `openai/gpt-6-sol`, `~openai/gpt-latest` 같은 벤더 슬러그도 적은 그대로 라우팅됩니다 |
+| `model` | *(필수)* | Codex 클라이언트가 Responses 본문에 보내는 공개 모델 id. **정확 일치**이며 **대소문자를 구분**합니다 — prefix 매칭도, `[1m]` 제거도, 문자 집합 제한도 없으므로 `MiniMax-M3`, `openai/gpt-6.1-sol`, `~openai/gpt-latest` 같은 벤더 슬러그도 적은 그대로 라우팅됩니다 |
 | `provider` | *(필수)* | 이 모델을 제공할 provider. `kind = "responses"`여야 하며 자격 증명이 없는 auth 모드(`passthrough` 또는 `none`)를 쓰면 안 됩니다 |
 | `upstream_model` | `model` | upstream으로 보낼 모델 id. `model`과 다르면 shunt가 본문 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다 |
 
