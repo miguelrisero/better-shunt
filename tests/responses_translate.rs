@@ -2443,8 +2443,15 @@ fn gpt_6_1_sol_keeps_prompt_cache_key_and_cached_token_usage() {
     }))
     .unwrap();
     for flavor in [ResponsesFlavor::Chatgpt, ResponsesFlavor::OpenAi] {
-        let out = translate_request(&body, &route("gpt-6.1-sol"), flavor, false, Some("sess-61"))
-            .unwrap();
+        let out = translate_request(
+            &body,
+            &route("gpt-6.1-sol"),
+            flavor,
+            false,
+            Some("sess-61"),
+            false,
+        )
+        .unwrap();
         assert_eq!(out["model"], "gpt-6.1-sol", "{flavor:?}");
         assert_eq!(out["prompt_cache_key"], "sess-61", "{flavor:?}");
     }
