@@ -4,9 +4,9 @@ Engineering note for the opt-in `[models.router]` `type = "stage_router"`,
 implementing
 [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md).
 Status: **implemented.** User-facing documentation lives in the
-[stage router guide](https://shunt.sh/guides/stage-router/), with the scorer's
-provenance, the upstream benchmark results, and the scoring formula in
-[Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
+[stage router guide](https://shunt.sh/guides/stage-router/), which also carries
+the scoring formula, with the scorer's provenance and the upstream benchmark
+results in [Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
 the implementation record — what the code does, why, and what a change to it must
 not break. The `switchyard-libsy` dependency it scores through — how it is
 pinned, how to read its API, and how to bump it — is
@@ -268,7 +268,10 @@ the new table necessarily holds the higher one.
 
 The fingerprint destructures `StageRouterConfig` rather than dotting into it, so a
 key added to the table later fails to compile in `fingerprint` instead of quietly
-letting stale pins outlive it.
+letting stale pins outlive it. `[models.router.classifier]` is destructured the
+same way, and its `classify_trigger` is hashed by what it does on this route:
+`user_turn` is a different table, while `new_session` and `every_request`
+consult identically here and hash alike.
 
 Capacity is **two budgets**, not one: `MAX_TRACKED_SESSIONS = 4096` for parent
 entries and `MAX_TRACKED_CHILD_PINS = 4096` for child ones, trimmed on insert —

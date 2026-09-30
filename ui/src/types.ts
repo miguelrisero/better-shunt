@@ -18,6 +18,12 @@ export interface SessionBootstrap {
    * stops being usable.
    */
   expiry_buffer_ms: number;
+  /**
+   * `[server.admin] hide_observed`: the gateway does not read this machine's
+   * provider logins, so `GET /admin/api/observed` is always empty. Optional
+   * because a gateway older than the option omits it.
+   */
+  hide_observed?: boolean;
 }
 
 export interface QuotaBucket {
@@ -60,6 +66,7 @@ export interface PoolAccount {
   reset_7d?: number | null;
   utilization_7d_oi?: number | null;
   reset_7d_oi?: number | null;
+  quota_buckets?: QuotaBucket[];
 }
 
 export interface PoolProvider {
@@ -114,4 +121,5 @@ export interface AccountRow {
   reset_7d?: number | null;
   utilization_7d_oi?: number | null;
   reset_7d_oi?: number | null;
+  quota_buckets?: QuotaBucket[];
 }

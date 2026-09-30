@@ -63,6 +63,19 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
+    // The client's one-shot post-compaction hint, decided once per request:
+    // the Responses adapter consumes it on the first dispatch that reaches an
+    // upstream — either transport — and every later dispatch of the same turn
+    // (route failover, the gated lane's capture and REDO, the WS→HTTP
+    // fallback) reads the already-advanced window without bumping again.
+    // Judge and advisor calls build their own body, so they never see the
+    // mark at all; `judge_headers` also drops the header they would clone.
+    body.set_compaction_mark(crate::adapters::responses::compact_marked(headers));
+    // The same boundary marks the body as the client's own turn: the
+    // Responses translation scopes its chatgpt-flavor defaults (the
+    // encrypted-reasoning `include`) to client turns, so an internal call to
+    // a chatgpt target never requests reasoning blobs it cannot round-trip.
+    body.mark_client_turn();
     // Claude Code's auto mode asks the API to classify the session's own tool
     // uses server-side (`safeguards` + the `dangerous-tool-use-…` beta). Only
     // api.anthropic.com answers it, and a completed response carrying no
@@ -94,6 +107,7 @@ pub(super) async fn forward(
         decided: std::cell::Cell::new(None),
         consult: std::cell::Cell::new(None),
         drive_prefill: std::cell::Cell::new(false),
+        probe: std::cell::Cell::new(None),
     };
     let (mut routes, requested_model) =
         routing::resolve_request_chain_value(&state.config, body.json(), Some(&stage)).map_err(
@@ -115,6 +129,29 @@ pub(super) async fn forward(
     let driven = (!is_count_tokens(uri))
         .then(|| state.config.driven_stage(model_key))
         .flatten();
+    // A probe on a driven router or overlay resolves to the session's retained
+    // target — what the entry's real turns last observably left libsy holding
+    // — rather than to the provisional fail-open default `resolve_chain`
+    // answered with (ADR-0005 §3, issue #647). Read here, before admission and
+    // the first-route truncation below, because the probe is gated and
+    // dispatched against that target's first route. A pure read of the
+    // entry's shadow record: libsy's own state is never asked, since every
+    // completed drive writes it, so no drive runs, no judge is called, and
+    // nothing is written for a caller who may yet be refused.
+    let probe_retained = stage.probe.take().and_then(|kind| {
+        let entry = match kind {
+            routing::stage::ConsultKind::Router => state.driven_routers.router(model_key),
+            routing::stage::ConsultKind::Overlay => state.driven_routers.overlay(model_key),
+            routing::stage::ConsultKind::StageClassifier => None,
+        }?;
+        entry.retained(
+            &routing::context::RouterContext::from_headers(headers),
+            started_at,
+        )
+    });
+    if let Some(retained) = &probe_retained {
+        routes = routing::resolve_target_chain(&state.config, &retained.target, model_key);
+    }
     if is_count_tokens(uri) {
         // count_tokens answers from the first chain element only, so gate and
         // dispatch against just that element: a later credential-injecting
@@ -204,6 +241,13 @@ pub(super) async fn forward(
     // never served, so counting it would report traffic the gateway did not
     // carry. `None` for every request whose id carries no router.
     let mut router_outcome = stage.decided.take();
+    // Kept consistent with the retained target the probe was routed to. Never
+    // recorded — a probe is `read_only` — but the parked outcome should not
+    // name a destination the request was not sent to.
+    if let (Some(retained), Some(outcome)) = (probe_retained, router_outcome.as_mut()) {
+        outcome.target = retained.target;
+        outcome.source = retained.source;
+    }
     // `stage` borrows the parsed body, and the handoff note below mutates it.
     // Every output — the pin, the outcome, the consultation — has already been
     // taken, so the borrow has nothing left to serve; it also holds `Cell`s and
@@ -221,14 +265,20 @@ pub(super) async fn forward(
         router_outcome.as_mut(),
     ) {
         let bounds = stage_cfg.bounds();
-        let verdict = if consult.judge_calls_used >= bounds.max_judge_calls {
-            // Checked before the call is charged, so the budget is a ceiling on
-            // calls made rather than on calls attempted.
+        // Reserved here, at dispatch, and the reservation is the check: one
+        // lock acquisition with no `.await` before the call, so concurrent turns
+        // of one session admit exactly as many calls as the budget has left.
+        // The count lives beside the pins, not on this turn's pending pin, so
+        // it publishes no tier and nothing refunds it if the pin later loses
+        // its `commit` race (issue #634). A refused turn made no call.
+        let reserved = state.stage_router.try_charge_judge(
+            consult.budget.as_ref(),
+            bounds.max_judge_calls,
+            started_at,
+        );
+        let verdict = if !reserved {
             routing::judge::JudgeOutcome::FailOpen("budget_exhausted")
         } else {
-            if let Some(pin) = pending.as_mut() {
-                pin.record_judge_call();
-            }
             // Cloned so the mint's borrow is of a local, leaving `outcome`
             // free to be rewritten by the verdict below.
             let router_id = outcome.model.clone();
@@ -1055,6 +1105,9 @@ fn stamp_gateway_headers(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod gated_tests;
 
 #[cfg(all(test, feature = "prefill-router"))]
 mod prefill_tests;
