@@ -2449,7 +2449,7 @@ fn gpt_6_1_sol_keeps_prompt_cache_key_and_cached_token_usage() {
             flavor,
             false,
             Some("sess-61"),
-            false,
+            true,
         )
         .unwrap();
         assert_eq!(out["model"], "gpt-6.1-sol", "{flavor:?}");
