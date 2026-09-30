@@ -528,6 +528,209 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   `weak_target` may equal `classifier_target` without upstream's
   prompted-target restriction, and the gated call is not charged to
   `max_judge_calls`, which bounds judge calls only.
+- **2026-09-25 (issues #634, #648, #649) — `max_judge_calls` is charged per
+  dispatched call, off the pin.** §3 says only that a per-session
+  `max_judge_calls` bounds count. The shipped lanes counted it three ways: the
+  stage router on the tier pin, read as a snapshot and written at `commit`,
+  so concurrent turns overspent it and a superseded pin refunded its call; the
+  driven lane in a side table, but behind a pre-drive check that refused
+  *turns*, including affinity replays that make no call; and every driven
+  entry keyed an agent-id-less delegated turn onto its parent's budget. One
+  rule now holds on every lane, gated ones included: a call is charged at the
+  moment it is dispatched, the read and the reservation under one lock with no
+  `.await` between them; a call made is never refunded; the count is never
+  published as a tier; and a turn that makes no judge call is never refused by
+  it. The stage router's count moves into a side table beside its pins, keyed
+  by (model, router table, session, agent scope), and keeps the pin's lifetime
+  without riding on it: `session_ttl_seconds` refreshed by every served turn,
+  and a reset when a reload changes the table. A delegated turn with no agent
+  id draws on one bounded budget per session instead of its parent's. A refused
+  driven call is closed by libsy's own cascade, which for a `composite` keeps
+  the session's retained tier rather than `stage.efficient_target`; the
+  `budget_exhausted` outcome still names every refusal.
+- **2026-09-25 (issue #647) — a probe reads the session's retained target
+  without driving.** §3 resolves a `count_tokens` probe to "the session's
+  current pin or, when no live pin exists, the algorithm's no-model-call
+  decision". The driven lane shipped only the second half: every probe on a
+  driven entry answered from its fail-open target, so a session held on
+  another target was measured against the wrong model. The probe still cannot
+  drive, even with its calls refused: libsy keeps affinity, composite tiers,
+  and the escalation latch private, and every completed drive writes them — it
+  would latch even a fail-open default — so a probe that drove would move the
+  session it measures. shunt therefore keeps a read-only per-entry record of
+  each session's retained target, written only by admitted real turns and read
+  only by probes, keyed by the judge budget's `sha256(session ‖ agent)` digest,
+  bounded at 4096 keys per class (parent and delegated) with the least recent
+  evicted, and rebuilt with the entry on reload, as libsy's own state is. A
+  probe still makes zero judge and gated calls, charges no `max_judge_calls`,
+  writes nothing, records no router or judge metric, and is gated and
+  dispatched against its target's first route only. Per form: `llm_classifier`
+  and the classifier-form overlay answer from the `(session, agent)`'s
+  assignment under `new_session` or `user_turn` — under `user_turn` even when
+  the probe's last message is a new user turn — and `every_request` retains
+  nothing; `composite` answers from the retained tier, else
+  `stage.efficient_target`, and scores no signals, and because a turn a stage
+  signal decides does not reveal the tier the judge set, the record follows
+  the retained tier on the next turn served from it; `escalation` answers
+  from `strong_target` while the session is latched (its last real turn was
+  served by the latch or a confirmed escalation; per session, shared by its
+  delegated children, expiring after an hour idle) and from `weak_target`
+  otherwise; `advisor` always answers from `executor_target`. A sessionless
+  probe, or a delegated probe with no agent id, has no retained target and
+  takes the no-model-call decision, `message_hash_fallback` included. The
+  body-less surfaces, the pure lane, and `prefill_router` are unchanged.
+  The record is a shadow, so it can differ from libsy's state in ways that are
+  bounded and corrected by the identity's next completed turn. Each affects a
+  probe's token count only:
+  - libsy caps affinity and tiers at 4096 identities in total with arbitrary
+    eviction, which a per-class least-recent rule cannot reproduce;
+  - two concurrent real turns of one `(session, agent)` can record in the
+    opposite order to libsy's writes;
+  - a drive abandoned after libsy wrote records nothing;
+  - libsy's hourly sweep can keep an idle latch up to about two hours, while a
+    probe treats it as expired after one.
+- **2026-09-29 (issues #653, #690) — a gated `stream: false` call keeps its
+  client contract, and its upstream transport is the adapter's.** §3 says
+  that for a non-streaming caller "the call is non-streaming too", and §4
+  that the JSON message comes "from a gated call made in non-streaming mode
+  (§3), on both adapters". That holds on the Anthropic adapter. The Responses
+  adapter has sent `"stream": true` on every turn since M1
+  (`src/model/responses_request.rs`; `docs/m1-responses-translation.md` §0 and
+  §5): one SSE state machine serves streaming and non-streaming callers, and
+  a non-streaming reply is aggregated from that SSE into one message
+  (`json_response` over HTTP, `json_events_response` over the Codex
+  WebSocket). The contract is therefore stated at the client. A `stream:
+  false` caller on a gated turn gets one JSON message from a completed turn,
+  and the judge's `Response` derives from that message. The upstream transport
+  is adapter-specific: the Anthropic adapter makes a non-streaming call, and
+  the Responses adapter streams upstream and aggregates. The same split
+  applies to §3's "Non-streaming for judges": a judge, classifier, or review
+  call to a Responses target is aggregated the same way. `serve` still adds no
+  SSE-to-JSON conversion; the aggregation is the adapter's own, the path every
+  non-streaming client turn on that adapter already takes.
+
+  The aggregation is bounded by the §3 keys: `gated_max_bytes` on what the
+  adapter receives (the body bytes over HTTP, each event's type and payload as
+  compact JSON on the WebSocket), `gated_max_duration_ms` on the wall clock,
+  and `gated_idle_ms` on the gap between units of progress. A unit of progress
+  is a completed SSE frame that is not a keep-alive, or a WebSocket event. On
+  the Responses adapter the idle clock starts when the request is sent. The
+  HTTP header wait, and the WebSocket handshake (or a pooled connection's
+  probe) with the wait for the first event, are the first gap. Local work after that — the bounded input-token estimate, up to 1 s —
+  neither pauses nor restarts the clock (#690). The reply is not read during
+  that wait, so a frame that arrives after the gap closed but before the first
+  read is still taken as progress. The overshoot stays below the estimate's
+  1 s bound, and #703 tracks closing it. A new request starts its own
+  clock: a retried send, a pooled account's attempt, or a retry after a
+  credential refresh. The terminal-marker rule is unchanged. A message
+  synthesized from a stream that ended before `response.completed` is marked
+  `UpstreamTruncated` and cut, never served.
+
+  The Responses adapter keeps streaming rather than making the call
+  non-streaming. The evidence below was recorded on 2026-09-29 from public
+  sources, with no live upstream call:
+  - The ChatGPT/Codex backend is reported to refuse `stream: false` with
+    `400 "Stream must be set to true"`. langchain-ai/langchain documents this
+    in `libs/partners/openai/langchain_openai/chat_models/codex.py` and forces
+    streaming, then aggregates. A mock backend in usestrix/strix
+    (`tests/test_codex_streaming.py`) and a bug report in tinyhumansai/openhuman
+    (#5353) show the same body. openai/codex sends `stream: true` on every
+    Responses request, its internal guardian-v2 scorer included
+    (`codex-rs/core/src/client.rs`,
+    `codex-rs/ext/guardian-v2/src/async_scorer/sampler.rs`). The Codex
+    WebSocket transport has no non-streaming form at all.
+  - Xiaomi MiMo, one of the documented Codex Responses vendors, is reported
+    to refuse `stream: false` the same way (mydisha/keirouter,
+    `backend/internal/connectors/openai_compatible.go`).
+  - The stock OpenAI Platform `/v1/responses` accepts `stream: false`
+    (openai-python's non-streaming `responses.create` overload). The xAI and
+    Grok flavors were not checked. On those flavors, streaming is a choice
+    rather than a constraint: one code path for every flavor, where a
+    non-streaming arm would add a second parser, error mapping, and set of
+    bounds for the gated and judge calls alone.
+
+  The harm #653 reported was a stall held until `gated_max_duration_ms`.
+  #670 and #688 removed it, and the send-time clock above closes the window
+  the header wait and the estimate wait left open, short of the sub-second
+  residue #703 tracks. A per-flavor non-streaming arm for the flavors that
+  accept one remains open to a later change and would not reverse this
+  amendment.
+
+- **2026-09-29 (issue #654) — a weak turn refused for its context window
+  escalates.** §3 sends escalation to the strong target only for a weak turn
+  that "crosses a bound or ends before its marker"; an upstream refusal of the
+  gated call was relayed. The pinned libsy client types one refusal apart — a
+  `400` naming the context window, as `ContextWindowExceeded` — and both
+  pinned algorithms branch on it: escalation falls back to its strong target,
+  and the advisor propagates it for the host to relay. shunt, serving the gated
+  call, now types that refusal the same way, by libsy's Anthropic-backend rule
+  applied to the refusal the caller would have received, so a weak-tier
+  overflow is served live by the strong target (`escalation_fallback`) with no
+  judge call. An advisor still relays the `400`. Every other refusal is
+  relayed unchanged.
+
+- **2026-09-29 (issues #703, #704) — the Responses send-time clock covers the
+  estimate wait and the error body.** The #653/#690 amendment above leaves one
+  residue: the reply was not read during the bounded input-token estimate, so
+  a frame that arrived after the gap closed but before the first read was taken
+  as progress, and #703 tracked closing it. It is closed. The non-streaming
+  collectors (`json_response` over HTTP, the pooled relay included, and
+  `json_events_response` over the WebSocket) now read the reply while the
+  estimate is still pending, and use the estimate only once the reply is
+  collected. A frame is progress only if it arrives inside the gap. The
+  estimate's 1 s bound is unchanged, and so is every client turn's output.
+  The same clock now covers an error body (#704). On a gated call, the error
+  body of an attempt that answered with a non-2xx status is read within the
+  rest of the gap its header wait began, and each chunk after that refreshes
+  the gap. This holds on the single-account HTTP path and in the pooled
+  ChatGPT-OAuth refusal check. A body that stalls is the call's cut, with the
+  idle marker. It is not relayed after the error-envelope budget, and it does
+  not rotate the pool. Client turns read error bodies as before. One read is
+  left out: the body a ChatGPT-OAuth pool relays once every account has
+  failed is still read under the error-envelope budget alone. Anchoring it to
+  the retained attempt's send would charge it for the later attempts' time;
+  #707 tracks reading it under a fresh gap.
+
+- **2026-09-30 (issue #707) — the pool-exhausted error body is read under a
+  fresh gap.** This removes the one exception the 2026-09-29 (#703, #704)
+  amendment above leaves. On a gated call, the body a ChatGPT-OAuth pool
+  relays once every account has failed is read under a new idle gap that
+  starts when the pool runs out of accounts, as the Anthropic adapter's gated
+  error read starts its own. The kept attempt's send stays the wrong anchor,
+  for the reason given above. The gap can cut the read only when
+  `gated_idle_ms` is shorter than the 5 s error-envelope budget. Then a body
+  that stalls past the gap is the call's cut, with the idle marker, so an
+  escalation entry falls back to its strong target as it does on the
+  single-account path. With a longer gap, the default 60 s included, the
+  envelope budget ends the read first, and the refusal is relayed with its
+  status as before. A body that arrives inside the gap is relayed as before,
+  with its status, `retry-after`, and message, under the same 5 s and
+  256 KiB error-envelope bounds. Client turns read this body
+  lazily and read no clock, as before.
+
+- **2026-09-30 (the #709 review) — an error-body stall is a cut only when the
+  gap closes inside the error-envelope budget.** The 2026-09-29 (#703, #704)
+  amendment above says a stalled error body is the call's cut and is not
+  relayed after the error-envelope budget. That holds only when the gap
+  closes first. The read keeps its own 5 s budget, counted from when the read
+  starts, and a chunk moves the gap's deadline but not the budget's. On the
+  single-account HTTP path and in the pooled ChatGPT-OAuth refusal check, a
+  stalled body is therefore the call's cut, with the idle marker, only when
+  the gap's current deadline comes before the budget's end. That needs less
+  than 5 s of the gap left as the read starts (`gated_idle_ms` under 5 s, or
+  a header wait that used all but the last 5 s of it), and it is not enough
+  on its own: a chunk that arrives late in the read pushes the deadline past
+  the budget's end. With a 4 s gap, a chunk 3.5 s into the read moves the
+  deadline to 7.5 s, so a stall after it is not a cut. Otherwise the budget
+  ends the read first. The single-account path then relays the
+  refusal with its status, its `retry-after`, and a message naming the status
+  in place of the unread body (`gated_error`). The pooled refusal check leaves
+  the `400` unjudged, so it does not rotate the pool, and relays it the same
+  way. With the default `gated_idle_ms` of 60 s, this is the usual case. The
+  same rule applies to the pool-exhausted read of the 2026-09-30 (#707)
+  amendment above. Its fresh gap takes the header wait out of the condition,
+  so a stall there is a cut only when `gated_idle_ms` is under 5 s and no
+  late chunk has pushed the deadline past the budget's end.
 
 ### 10. Verification before code
 

@@ -233,9 +233,10 @@ pub struct PoolConfig {
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
-    /// Poll Claude's `/api/oauth/usage` and Codex's `/wham/usage` every N
-    /// seconds for refreshable accounts. Unset or `0` disables polling;
-    /// positive values below 60 are clamped to 60 seconds.
+    /// Poll Claude's `/api/oauth/usage`, Codex's `/wham/usage`, and
+    /// Antigravity's `retrieveUserQuotaSummary` every N seconds for refreshable
+    /// accounts. Unset or `0` disables polling; positive values below 60 are
+    /// clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
     /// Persist the pool's per-account quota state to this file so a restart
@@ -449,6 +450,11 @@ pub struct AdminConfig {
     /// Pending-login lifetime (time to open the authorize URL and paste back).
     #[serde(default = "default_admin_pending_ttl_secs")]
     pub pending_ttl_secs: u64,
+    /// When true, skip host CLI/app credential discovery. `GET /admin/api/observed`
+    /// still authenticates but returns an empty list without reading those
+    /// files, and the dashboard's usage table lists managed pool accounts only.
+    #[serde(default)]
+    pub hide_observed: bool,
     /// Optional external identity provider for browser sign-in.
     #[serde(default)]
     pub oidc: Option<AdminOidcConfig>,
@@ -2027,7 +2033,9 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// Whether `host` is the stock OpenAI Responses API host, exactly
 /// (`api.openai.com`, no subdomains). Used by [`Config::native_tool_search`]
 /// to decide whether an "auto" (unset `tool_search`) provider may default to
-/// the native protocol. Unlike `host_is_xai`/`host_is_cursor`/
+/// the native protocol, by the api-key affinity gate in
+/// `adapters::responses::request`, and by the shared client's redirect
+/// policy. Unlike `host_is_xai`/`host_is_cursor`/
 /// `host_is_anthropic`, which widen to any subdomain to avoid leaking a
 /// subscription bearer off one operator's origin, this check is narrowed to
 /// the single documented Responses endpoint on purpose: other `openai.com`
@@ -2035,7 +2043,7 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// products with no guarantee they implement `tool_search` items the same
 /// way, so trusting the whole domain would risk silently promoting an
 /// unverified host to the native wire shape.
-fn host_is_openai(host: &str) -> bool {
+pub(crate) fn host_is_openai(host: &str) -> bool {
     host == "api.openai.com"
 }
 
@@ -5079,6 +5087,20 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Whether `provider` targets the stock OpenAI Responses host, exactly
+    /// (`api.openai.com`). Codex sends its session-affinity headers there under
+    /// api-key auth (`codex-rs` api-key test), so the api-key adapter branch
+    /// mirrors them on this host and nowhere else — a third-party
+    /// OpenAI-compatible host has no use for codex identity headers.
+    pub fn is_openai_backend(&self, provider: &str) -> bool {
+        self.provider(provider).is_some_and(|config| {
+            reqwest::Url::parse(&config.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(host_is_openai))
+                .unwrap_or(false)
+        })
+    }
+
     /// The effective storm-control initial admission allowance
     /// (`[server.pool] ramp_initial_concurrency`), or `None` when no pool is
     /// configured or the gate is disabled.
@@ -5654,7 +5676,14 @@ mod tests {
         assert_eq!(admin.tokens_env, "SHUNT_ADMIN_TOKENS");
         assert_eq!(admin.session_ttl_secs, 3600);
         assert_eq!(admin.pending_ttl_secs, 600);
+        assert!(!admin.hide_observed);
         assert!(admin.oidc.is_none());
+    }
+
+    #[test]
+    fn admin_config_parses_hide_observed() {
+        let admin: AdminConfig = serde_json::from_str(r#"{"hide_observed":true}"#).unwrap();
+        assert!(admin.hide_observed);
     }
 
     #[test]
@@ -5671,6 +5700,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: Some(AdminOidcConfig {
                 public_url: "http://127.0.0.1:8787".into(),
                 client_secret_env: secret_env.clone(),
@@ -5779,6 +5809,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            hide_observed: false,
             oidc: None,
         };
 
@@ -5839,6 +5870,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            hide_observed: false,
             oidc: None,
         };
 
@@ -7139,6 +7171,7 @@ provider = "deepseek"
             read_keys,
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: None,
         }
     }

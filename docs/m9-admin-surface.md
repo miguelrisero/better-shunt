@@ -72,6 +72,7 @@ header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600   # browser session lifetime after login
 pending_ttl_secs = 600    # time to open the authorize URL and paste the code back
+# hide_observed = false   # (default) read host CLI/app logins for the usage table
 
 # Per-credential keys with an id the audit trail records. The key must come
 # from ${VAR} / ${file:...} / a SHUNT_* override — a literal is rejected at load
@@ -311,7 +312,7 @@ process-lifetime state:
 | `GET` | `/admin/accounts` | JSON: Claude store metadata (name, kind, expiry, UUID — never the token) |
 | `GET` | `/admin/accounts/codex` | JSON: Codex store metadata (name, expiry, account ID — never the token) |
 | `GET` | `/admin/observed` | JSON: read-only observed Claude, Codex, Gemini, Kimi, Grok, and Cursor identity, state, and provider-native usage — never token material |
-| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth` managed-pool state; account objects may include an optional `plan` string |
+| `GET` | `/admin/pool` | JSON: per-`claude_oauth`/`chatgpt_oauth`/`antigravity_oauth` managed-pool state; account objects may include an optional `plan` string (`antigravity_oauth` accounts additionally carry a `quota_buckets` array containing the Gemini and Claude+GPT shared 5h/weekly windows from the `retrieveUserQuotaSummary` poll) |
 | `POST` | `/admin/accounts/claude` | `{name, mode}` → start Claude provisioning (`oauth` or `setup_token`); omitted `mode` defaults to `setup_token`; returns `{authorize_url}` |
 | `POST` | `/admin/accounts/claude/{name}/complete` | `{code}` → finish; stores the Claude account |
 | `POST` | `/admin/accounts/claude/{name}/refresh` | Exercise an **imported** account's refresh grant now and report whether the login is still alive; returns the new `expires_at` and never token material. `400` for a `setup_token` account (no refresh grant exists) or a terminal verdict (`invalid_grant`, no stored refresh token, or a rotated pair that could not be persisted); `502` for a non-terminal failure |
@@ -391,7 +392,13 @@ name-only account entry and reload.
 
 The dashboard is usage-first. `GET /admin/observed` discovers supported local
 credentials on each request but keeps every token/session in a private,
-non-serializable model. Claude Code checks its configured/default credential file,
+non-serializable model. Set `[server.admin].hide_observed = true` to skip that
+discovery: `GET /admin/api/observed` still authenticates and returns an empty
+`accounts` list without reading any of those sources, and
+`GET /admin/api/session` reports `hide_observed` so the SPA skips the read. The
+**Accounts and usage** table stays, listing managed pool accounts alone — it is
+also where their usage is shown, so removing it would hide the pool's numbers
+along with the host's logins. Claude Code checks its configured/default credential file,
 then macOS Keychain service `Claude Code-credentials`; Codex, Gemini, Kimi, and
 Grok read their CLI credential stores; Cursor opens Cursor.app's `state.vscdb`
 with `SQLITE_OPEN_READ_ONLY`. The endpoint masks account identity, labels

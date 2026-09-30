@@ -278,6 +278,21 @@ pub struct UsageSnapshot {
     pub seven_day_oi: Option<UsageWindow>,
 }
 
+/// One grouped model-family quota window from Google's Code Assist `retrieveUserQuotaSummary`
+/// RPC, as surfaced for an Antigravity pool account. The pool-side twin of
+/// `auth::observation::QuotaBucket` — kept separate since `accounts.rs` (pool)
+/// and `auth::observation` (local discovery) are intentionally independent
+/// modules with no existing coupling. The wire/JSON shape mirrors it so the
+/// frontend's existing bar-rendering code needs only a data-source change.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct QuotaBucketSnapshot {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_time: Option<String>,
+}
+
 impl UsageSnapshot {
     /// True when the fetch succeeded but reported no window at all. A usage
     /// poller must not call [`AccountPool::note_usage`] on an empty snapshot:
@@ -339,6 +354,11 @@ struct AccountHealth {
     cooldown_until: Option<Instant>,
     cooldown_until_fable: Option<Instant>,
     quota: QuotaState,
+    /// Latest grouped model-family quota windows from the Antigravity `retrieveUserQuotaSummary`
+    /// poll. Memory-only, like `cooldown_until`: re-fetched every poll tick
+    /// with no rotation logic depending on it, so it never enters `QuotaState`
+    /// (which `state_persist.rs` round-trips through the on-disk format).
+    quota_buckets: Vec<QuotaBucketSnapshot>,
     /// Latest configured selection state. Quota gauges exclude disabled accounts.
     enabled: bool,
     /// Whether the pool has processed at least one upstream response for this
@@ -385,6 +405,18 @@ struct AccountHealth {
     /// state_path` persists quota alone, so a restart clears this and the
     /// account's next terminal failure re-establishes it.
     needs_relogin: Option<ReloginCause>,
+    /// Per-model cooldowns, keyed by the ASCII-lowercased upstream model: the
+    /// account is healthy, but the upstream refused this one model for it
+    /// (see [`is_codex_model_unsupported`]). Selection folds the entry for
+    /// the requested model into [`governing_cooldown`], so other models on
+    /// the account are unaffected. Expired entries are pruned on insert
+    /// ([`AccountPool::cooldown_model`]) and on every selection of the account
+    /// because the key can be client-supplied on the inbound passthrough; for
+    /// the same reason live entries are capped at [`MAX_MODEL_COOLDOWNS`], and
+    /// a key longer than [`MAX_MODEL_COOLDOWN_KEY_BYTES`] is never stored.
+    /// Memory-only, like
+    /// `cooldown_until`.
+    model_cooldowns: HashMap<String, Instant>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -418,6 +450,12 @@ pub struct AccountSnapshot {
     pub utilization_7d_oi: Option<f64>,
     pub reset_7d_oi: Option<u64>,
     pub status: Option<String>,
+    /// Grouped model-family quota windows from the Antigravity `retrieveUserQuotaSummary` poll,
+    /// when present. Omitted when empty. Unlike the 5h/7d utilization fields
+    /// above, these carry no account-wide window — each bucket names its own
+    /// model with its own remaining fraction and reset time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quota_buckets: Vec<QuotaBucketSnapshot>,
     /// The credential is dead and needs an operator re-login (see
     /// [`AccountHealth::needs_relogin`]). Reported alongside — not folded
     /// into — `available` and the cooldown fields, so the dashboard can tell
@@ -449,6 +487,7 @@ impl AccountSnapshot {
             utilization_7d_oi: None,
             reset_7d_oi: None,
             status: None,
+            quota_buckets: Vec::new(),
             needs_relogin,
         }
     }
@@ -755,6 +794,7 @@ impl AccountPool {
             .unwrap_or_default()
             .as_secs();
         let is_fable = is_fable_model(model);
+        let model_key = model.map(str::to_ascii_lowercase);
         let reprobe = allow_reprobe.then(|| reprobe_interval(pool)).flatten();
         let (snapshots, pending_reprobe, quota_expired) = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
@@ -768,7 +808,11 @@ impl AccountPool {
                 // each account's QuotaState just to assess it after release.
                 let assessment = assess_quota(&health.quota, account, is_fable, pool, unix_now);
                 let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
-                let cooldown_until = governing_cooldown(health, is_fable);
+                // Prune expired per-model refusals here as well as on insert:
+                // the key can be client-supplied, so without a later refusal
+                // an expired entry would otherwise outlive its cooldown.
+                health.model_cooldowns.retain(|_, until| *until > now);
+                let cooldown_until = governing_cooldown(health, is_fable, model_key.as_deref());
                 snapshots.push((cooldown_until, assessment, weekly_reset));
             }
             // Opportunistic re-probe (Change B): among the final rotation
@@ -1271,6 +1315,29 @@ impl AccountPool {
         self.mark_dirty();
     }
 
+    /// Apply one successfully polled Antigravity `retrieveUserQuotaSummary` response.
+    /// Google's response is a full authoritative snapshot on every call, so the
+    /// buckets wholesale replace whatever the previous tick recorded — no
+    /// partial-window reconciliation like Claude's per-window
+    /// overwrite-if-present or Codex's clear-flags dance.
+    ///
+    /// Display-only on purpose: this leaves `health.quota` (5h/7d/aggregate
+    /// status) untouched and records no utilization metric, so Antigravity
+    /// pool selection/rotation behavior is unchanged (it already ignores quota
+    /// for this family) — matching the `/admin/observed` display-only
+    /// precedent.
+    pub fn note_antigravity_usage(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        buckets: Vec<QuotaBucketSnapshot>,
+    ) {
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries.entry(account_key(provider, account)).or_default();
+        health.observed = true;
+        health.quota_buckets = buckets;
+    }
+
     fn note_usage_inner(
         &self,
         provider: &str,
@@ -1352,6 +1419,42 @@ impl AccountPool {
         // account comes back it re-enters slow start instead of inheriting the
         // allowance it had grown before failing.
         health.ramp_allowance = 0;
+        drop(entries);
+        crate::metrics::record_pool_rotation(provider, reason);
+    }
+
+    /// Cool down one `(account, model)` pair: selection for `model` treats the
+    /// account as cooling down until `duration` passes, while every other model
+    /// on the account is unaffected. Unlike [`Self::cooldown_scoped`] this
+    /// leaves the account-wide cooldowns and the storm-control ramp alone — the
+    /// credential is healthy; the upstream only refused this one model for it
+    /// (see [`is_codex_model_unsupported`]).
+    pub fn cooldown_model(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        model: &str,
+        duration: Duration,
+        reason: &'static str,
+    ) {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let health = entries.entry(account_key(provider, account)).or_default();
+        health.observed = true;
+        health.enabled = !account.disabled;
+        // Prune on insert so expired refusals do not accumulate. On the inbound
+        // passthrough the key is client-supplied, so the live refusals are
+        // bounded too: an overlong model is not recorded at all (the refusal
+        // still rotates; the account is merely re-tried for it), and a full
+        // map records no new model. Keeping the existing entries means a burst
+        // of bogus models cannot push out a genuine refusal recorded earlier.
+        health.model_cooldowns.retain(|_, until| *until > now);
+        let key = model.to_ascii_lowercase();
+        let fits = health.model_cooldowns.contains_key(&key)
+            || health.model_cooldowns.len() < MAX_MODEL_COOLDOWNS;
+        if model.len() <= MAX_MODEL_COOLDOWN_KEY_BYTES && fits {
+            health.model_cooldowns.insert(key, now + duration);
+        }
         drop(entries);
         crate::metrics::record_pool_rotation(provider, reason);
     }
@@ -1984,6 +2087,7 @@ impl AccountPool {
                         utilization_7d_oi: health.quota.utilization_7d_oi,
                         reset_7d_oi: health.quota.reset_7d_oi,
                         status: health.quota.status.clone(),
+                        quota_buckets: health.quota_buckets.clone(),
                         // The entry's own mark *or* the side table's, because
                         // the set cannot always reach the entry: a verdict
                         // recorded with no uuid — the credential file carried no
@@ -2602,16 +2706,22 @@ pub fn is_fable_model(model: Option<&str>) -> bool {
     model.is_some_and(|model| model.to_ascii_lowercase().contains("fable"))
 }
 
-fn governing_cooldown(health: &AccountHealth, is_fable: bool) -> Option<Instant> {
-    // Fable traffic must wait for both applicable cooldowns, so the later expiry governs.
-    if is_fable {
-        match (health.cooldown_until, health.cooldown_until_fable) {
-            (Some(account), Some(fable)) => Some(account.max(fable)),
-            (account, fable) => account.or(fable),
-        }
-    } else {
-        health.cooldown_until
-    }
+/// The cooldown that governs selecting this account for a request: the
+/// account-wide cooldown, plus the Fable-only one for Fable traffic, plus the
+/// per-model one for `model_key` (the ASCII-lowercased upstream model). A
+/// request must wait for every applicable cooldown, so the latest expiry
+/// governs.
+fn governing_cooldown(
+    health: &AccountHealth,
+    is_fable: bool,
+    model_key: Option<&str>,
+) -> Option<Instant> {
+    let fable = is_fable.then_some(health.cooldown_until_fable).flatten();
+    let model = model_key.and_then(|model| health.model_cooldowns.get(model).copied());
+    [health.cooldown_until, fable, model]
+        .into_iter()
+        .flatten()
+        .max()
 }
 
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
@@ -3136,6 +3246,10 @@ pub fn classify_kimi(status: StatusCode, headers: &HeaderMap) -> FailoverAction 
 /// Takes the same `(status, headers)` shape as [`classify`] so both adapters
 /// share one call site. Codex quota/rejection headers are display-only: every
 /// 429 still rotates rather than pausing the same account.
+///
+/// Every other 4xx relays here, including a 400. The Responses pool reads the
+/// body of a 400 separately and rotates on the one per-account 400 it knows,
+/// the model entitlement refusal — see [`is_codex_model_unsupported`].
 pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverAction {
     if status.is_success() {
         return FailoverAction::Relay;
@@ -3152,6 +3266,60 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
     FailoverAction::Relay
 }
 
+/// How long a Codex pool account stays skipped for one model after the
+/// upstream refused that model for it ([`is_codex_model_unsupported`]). The
+/// refusal is a rollout/entitlement gate that flaps: on 2026-09-24 it lifted
+/// within hours. A refusal is a fast 400, so re-probing the account for the
+/// model hourly is cheap, and a shorter cooldown picks the model back up
+/// sooner than CLIProxyAPI's 12h once the gate lifts.
+pub const CODEX_MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(60 * 60);
+
+/// Most live per-model cooldowns one account holds. A real pool is refused a
+/// handful of models at a time; the cap only matters when the inbound
+/// passthrough is fed distinct unsupported model strings, and then a full map
+/// records no new model until an entry expires.
+const MAX_MODEL_COOLDOWNS: usize = 64;
+
+/// Longest model string recorded as a per-model cooldown key. Real model ids
+/// are far shorter; a longer client-supplied string is not stored.
+const MAX_MODEL_COOLDOWN_KEY_BYTES: usize = 128;
+
+/// Whether a Codex/ChatGPT upstream response is the per-account model
+/// entitlement refusal: HTTP 400 whose message says the model "is not
+/// supported", e.g. `{"detail":"The 'gpt-6-luna' model is not supported when
+/// using Codex with a ChatGPT account."}`.
+///
+/// The backend gates a model per ChatGPT account during a rollout, and the
+/// gate flaps over hours, so another pool account may well be entitled to the
+/// same model. The pool therefore rotates on this 400 and cools only the
+/// `(account, model)` pair ([`AccountPool::cooldown_model`]) instead of
+/// relaying it the way [`classify_codex`] relays every other 400. The match
+/// mirrors CLIProxyAPI's `isModelSupportErrorMessage` (its
+/// `model_not_supported` cooldown): a case-insensitive "model is not
+/// supported" — checked only in the JSON string fields `detail`,
+/// `error.message`, and top-level `message`, never the raw body, so the text
+/// echoed anywhere else (a prompt, an unrelated field) cannot trigger it.
+///
+/// Only HTTP responses are classified. On the websocket transport the refusal
+/// arrives as an in-stream `error` event after the turn has committed, so it
+/// is relayed without rotating, like any other in-stream error.
+pub fn is_codex_model_unsupported(status: StatusCode, body: &[u8]) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    ["/detail", "/error/message", "/message"]
+        .into_iter()
+        .filter_map(|pointer| value.pointer(pointer)?.as_str())
+        .any(|message| {
+            message
+                .to_ascii_lowercase()
+                .contains("model is not supported")
+        })
+}
+
 /// Classify an Antigravity (Code Assist) upstream response for account-pool
 /// failover. The backend reports quota exhaustion as a plain 429
 /// (`RESOURCE_EXHAUSTED` in the body, no Anthropic-style quota headers), so a
@@ -3164,22 +3332,51 @@ pub fn classify_antigravity(status: StatusCode, headers: &HeaderMap) -> Failover
     classify(status, headers)
 }
 
+/// Parse a `Retry-After` header. The value is returned unclamped: every caller
+/// bounds it for its own purpose (account cooldowns clamp, retry policy compares
+/// it against its budget), and a clamp here would hide an over-budget deadline.
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    // RFC 7231 allows two forms: delta-seconds or an HTTP-date. Try the cheap
-    // numeric form first, then fall back to the date form — a server that sends
-    // `Retry-After: <HTTP-date>` would otherwise be silently ignored.
-    if let Ok(seconds) = value.trim().parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
+    retry_after_value(value)
+}
+
+/// Parse one bounded `Retry-After` value. Delta-seconds are rounded upward
+/// to whole seconds so a fractional value can never cause an early retry, and
+/// saturate at `u64::MAX` seconds; dates in the past retain their zero-delay
+/// policy meaning.
+fn retry_after_value(value: &str) -> Option<Duration> {
+    if value.len() > 128 {
+        return None;
     }
-    let deadline = httpdate::parse_http_date(value.trim()).ok()?;
-    // Honor the wait until that instant; a deadline already in the past means
-    // "retry now" (zero wait) rather than falling through to computed backoff.
-    Some(
-        deadline
-            .duration_since(SystemTime::now())
-            .unwrap_or(Duration::ZERO),
-    )
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    // RFC delta-seconds are decimal digits; accepting only this grammar avoids
+    // f64's exponent and sign forms while still supporting provider decimals.
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && value.bytes().filter(|&byte| byte == b'.').count() <= 1
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+    {
+        let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+        // `whole` is a non-empty digit run, so the only parse failure is
+        // overflow — saturate instead of discarding a valid, very long delay.
+        let seconds = whole.parse::<u64>().unwrap_or(u64::MAX);
+        let has_fraction = fraction.bytes().any(|byte| byte != b'0');
+        return Some(Duration::from_secs(
+            seconds.saturating_add(u64::from(has_fraction)),
+        ));
+    }
+
+    let deadline = httpdate::parse_http_date(value).ok()?;
+    let wait = deadline
+        .duration_since(SystemTime::now())
+        .unwrap_or(Duration::ZERO);
+    Some(wait)
 }
 
 #[cfg(test)]
@@ -5832,6 +6029,177 @@ mod tests {
     }
 
     #[test]
+    fn model_cooldown_defers_only_that_model_on_that_account() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b")];
+        let session = "model-cooldown";
+        let sticky = pool.select_order("codex", &accounts, Some(session), Some("gpt-x"), None)[0];
+        let other = 1 - sticky;
+        let key = account_key("codex", &accounts[sticky]);
+        pool.entries
+            .lock()
+            .unwrap()
+            .get_mut(&key)
+            .unwrap()
+            .ramp_allowance = 4;
+
+        // Stored case-insensitively: a refusal for `GPT-X` governs `gpt-x`.
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "GPT-X",
+            Duration::from_secs(120),
+            "model_not_supported",
+        );
+
+        assert_eq!(
+            pool.select_order("codex", &accounts, Some(session), Some("gpt-x"), None),
+            vec![other, sticky],
+            "the refused model must skip the cooled account for the uncooled one"
+        );
+        assert_eq!(
+            pool.select_order("codex", &accounts, Some(session), Some("gpt-y"), None)[0],
+            sticky,
+            "another model on the same account must be unaffected"
+        );
+        {
+            let entries = pool.entries.lock().unwrap();
+            let health = &entries[&key];
+            assert!(health.observed);
+            assert_eq!(health.cooldown_until, None, "no account-wide cooldown");
+            assert_eq!(health.ramp_allowance, 4, "the storm-control ramp is kept");
+        }
+
+        // Every account cooled for the model: the soonest expiry still leads.
+        pool.cooldown_model(
+            "codex",
+            &accounts[other],
+            "gpt-x",
+            Duration::from_secs(60),
+            "model_not_supported",
+        );
+        assert_eq!(
+            pool.select_order("codex", &accounts, Some(session), Some("gpt-x"), None),
+            vec![other, sticky]
+        );
+
+        // Expired entries are pruned when the next one lands.
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "gpt-x",
+            Duration::ZERO,
+            "model_not_supported",
+        );
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "gpt-z",
+            Duration::from_secs(60),
+            "model_not_supported",
+        );
+        {
+            let entries = pool.entries.lock().unwrap();
+            let cooled = entries[&key].model_cooldowns.keys().collect::<Vec<_>>();
+            assert_eq!(cooled, vec!["gpt-z"]);
+        }
+
+        // Expired entries are also pruned by selection, with no later refusal:
+        // a selection for any model drops every lapsed per-model entry.
+        pool.cooldown_model(
+            "codex",
+            &accounts[sticky],
+            "gpt-z",
+            Duration::ZERO,
+            "model_not_supported",
+        );
+        pool.select_order("codex", &accounts, Some(session), Some("gpt-y"), None);
+        let entries = pool.entries.lock().unwrap();
+        assert!(
+            entries[&key].model_cooldowns.is_empty(),
+            "selection must prune expired model cooldowns"
+        );
+    }
+
+    #[test]
+    fn model_cooldowns_are_bounded_for_client_supplied_models() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        let key = account_key("codex", &account);
+        // A genuine refusal recorded first survives the burst that fills the map.
+        pool.cooldown_model(
+            "codex",
+            &account,
+            "gpt-real",
+            Duration::from_secs(60),
+            "model_not_supported",
+        );
+        for index in 0..MAX_MODEL_COOLDOWNS {
+            pool.cooldown_model(
+                "codex",
+                &account,
+                &format!("bogus-{index}"),
+                Duration::from_secs(60 + index as u64),
+                "model_not_supported",
+            );
+        }
+        pool.cooldown_model(
+            "codex",
+            &account,
+            &"x".repeat(MAX_MODEL_COOLDOWN_KEY_BYTES + 1),
+            Duration::from_secs(600),
+            "model_not_supported",
+        );
+        let entries = pool.entries.lock().unwrap();
+        let cooled = &entries[&key].model_cooldowns;
+        assert_eq!(cooled.len(), MAX_MODEL_COOLDOWNS, "live entries are capped");
+        assert!(cooled.contains_key("gpt-real"), "an earlier entry is kept");
+        assert!(
+            !cooled.contains_key(&format!("bogus-{}", MAX_MODEL_COOLDOWNS - 1)),
+            "a full map records no new model"
+        );
+        assert!(
+            cooled
+                .keys()
+                .all(|model| model.len() <= MAX_MODEL_COOLDOWN_KEY_BYTES),
+            "an overlong model is not stored"
+        );
+    }
+
+    #[test]
+    fn detects_the_codex_model_entitlement_refusal() {
+        let refusal =
+            "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.";
+        for body in [
+            serde_json::json!({ "detail": refusal }),
+            serde_json::json!({ "error": { "message": refusal } }),
+            serde_json::json!({ "message": refusal }),
+            serde_json::json!({ "detail": "The model IS NOT SUPPORTED here" }),
+        ] {
+            assert!(
+                is_codex_model_unsupported(StatusCode::BAD_REQUEST, body.to_string().as_bytes()),
+                "must match: {body}"
+            );
+        }
+        let refusal_body = serde_json::json!({ "detail": refusal }).to_string();
+        assert!(!is_codex_model_unsupported(
+            StatusCode::FORBIDDEN,
+            refusal_body.as_bytes()
+        ));
+        for body in [
+            serde_json::json!({ "detail": "Invalid value for 'input'." }).to_string(),
+            refusal.to_string(),
+            serde_json::json!({ "input": refusal }).to_string(),
+            serde_json::json!({ "error": { "code": refusal } }).to_string(),
+        ] {
+            assert!(
+                !is_codex_model_unsupported(StatusCode::BAD_REQUEST, body.as_bytes()),
+                "must not match: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn shared_rejection_cooldown_defers_both_model_families() {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b")];
@@ -7731,6 +8099,65 @@ mod tests {
     }
 
     #[test]
+    fn note_antigravity_usage_applies_buckets_and_replaces_wholesale() {
+        let pool = AccountPool::new();
+        let provider = "antigravity-usage-buckets";
+        let target = account("agy-target");
+        let sibling = account("agy-sibling");
+        pool.sync_enabled_accounts(provider, &[target.clone(), sibling.clone()]);
+
+        pool.note_antigravity_usage(
+            provider,
+            &target,
+            vec![
+                QuotaBucketSnapshot {
+                    label: "Gemini Models · 5h".to_string(),
+                    remaining: Some(0.7),
+                    reset_time: Some("2026-09-24T00:00:00Z".to_string()),
+                },
+                QuotaBucketSnapshot {
+                    label: "Claude + GPT Models · 5h".to_string(),
+                    remaining: Some(0.92),
+                    reset_time: None,
+                },
+            ],
+        );
+
+        let snaps = pool.snapshot(provider, &[target.clone(), sibling.clone()], None, None);
+        let target_snap = snaps.iter().find(|s| s.name == target.name).unwrap();
+        assert!(target_snap.has_state);
+        assert_eq!(target_snap.quota_buckets.len(), 2);
+        assert_eq!(target_snap.quota_buckets[0].label, "Gemini Models · 5h");
+        assert_eq!(target_snap.quota_buckets[0].remaining, Some(0.7));
+        // Display-only: the aggregate quota state is untouched, so selection
+        // behavior is unchanged.
+        assert_eq!(target_snap.utilization_5h, None);
+        assert_eq!(target_snap.utilization_7d, None);
+        assert!(!target_snap.near_quota);
+        let sibling_snap = snaps.iter().find(|s| s.name == sibling.name).unwrap();
+        assert!(!sibling_snap.has_state);
+        assert!(sibling_snap.quota_buckets.is_empty());
+
+        // A second poll fully replaces the first bucket list — Google's
+        // response is authoritative each call, so nothing merges.
+        pool.note_antigravity_usage(
+            provider,
+            &target,
+            vec![QuotaBucketSnapshot {
+                label: "Claude + GPT Models · weekly".to_string(),
+                remaining: Some(0.5),
+                reset_time: None,
+            }],
+        );
+        let snaps = pool.snapshot(provider, std::slice::from_ref(&target), None, None);
+        assert_eq!(snaps[0].quota_buckets.len(), 1);
+        assert_eq!(
+            snaps[0].quota_buckets[0].label,
+            "Claude + GPT Models · weekly"
+        );
+    }
+
+    #[test]
     fn codex_usage_drops_elapsed_resets_before_fresh_utilization() {
         let pool = AccountPool::new();
         let provider = "codex-usage-expired-reset-regression";
@@ -8132,6 +8559,60 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("42"));
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn parses_decimal_retry_after_with_upward_rounding() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static(" 1.01 "));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(2)));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("0"));
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("0.0"));
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("0.5"));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn preserves_extreme_retry_after_unclamped_and_saturates() {
+        // Callers bound the value themselves; the parser must hand back the
+        // requested deadline so retry policy can see it exceeds its budget.
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("7200"));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(7200)));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("999999999999"));
+        assert_eq!(
+            retry_after(&headers),
+            Some(Duration::from_secs(999_999_999_999))
+        );
+
+        // Past u64 seconds (with or without a fraction, and past u128 too),
+        // a valid delta saturates rather than being discarded.
+        for value in [
+            "18446744073709551615.5",
+            "18446744073709551616",
+            "1234567890123456789012345678901234567890",
+        ] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+            assert_eq!(
+                retry_after(&headers),
+                Some(Duration::from_secs(u64::MAX)),
+                "{value} must saturate"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_and_overlong_retry_after() {
+        let mut headers = HeaderMap::new();
+        for value in ["1e3", ".5", "1.", "-1", "nan", ""] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+            assert_eq!(retry_after(&headers), None, "{value} must be rejected");
+        }
+        let long = "1".repeat(129);
+        headers.insert(RETRY_AFTER, HeaderValue::from_str(&long).unwrap());
+        assert_eq!(retry_after(&headers), None);
     }
 
     #[test]

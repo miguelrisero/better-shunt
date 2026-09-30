@@ -8,7 +8,7 @@ Setup guide: [docs/setup-shunt.md](https://github.com/miguelrisero/ultraship/blo
 
 ## Baseline and maintained changes
 
-Upstream baseline: `0462fb5364908d21ae154ee1fc26baa590ded48b` (v0.49.1), merged into
+Upstream baseline: `e669227747237363390b9da40cc5238fd325d80a` (v0.51.1), merged into
 fork `main`. Changes are deliberately pinned instead of deploying upstream main automatically.
 
 - Conservative schema regex filtering: a pattern must pass the Python compatibility
@@ -19,8 +19,9 @@ fork `main`. Changes are deliberately pinned instead of deploying upstream main 
 - Progressive tool discovery and readable tool-reference history on non-Anthropic
   Messages providers ([#424](https://github.com/pleaseai/shunt/issues/424)). No arbitrary
   truncation of the callable catalog.
-- `gpt-6.1-sol` support: native `tool_search` and the `max` effort level, like `gpt-6-sol`.
-  Older Sol slugs keep working.
+- `gpt-6.1-sol` native `tool_search` support: upstream's exact model allowlist still
+  omits this slug. Older Sol slugs keep working. Effort translation already handles
+  Sol 6.1 upstream; the fork retains its regression assertion, not a separate patch.
 - `shunt init` starter example uses `gpt-6.1-sol`.
 - `tests/compatibility_guards.rs` pins these guards, including the public Neon email pattern.
 - Fork model policy for fork-owned guidance: no Grok subagent plugin, Grok setup
@@ -44,6 +45,21 @@ The fork carries no patch for any of them. #661 supersedes the upstream assertio
 only `rate_limit_exceeded` is a throttle, so that comment leaves
 `tests/responses_translate.rs` by upstream change, not by a dropped fork patch.
 
+### Retired at v0.51.1
+
+The fork's Codex `0.159.0` client-identity patch is removed. Upstream
+[#720](https://github.com/pleaseai/shunt/pull/720) supplies `0.159.2`, including
+the shared usage-poller identity and translated documentation. The complete
+`src/adapters/responses/request.rs` now matches the release tag.
+
+Upstream also owns prompt-cache/session affinity parity
+([#699](https://github.com/pleaseai/shunt/pull/699)), Codex account/model failover
+([#676](https://github.com/pleaseai/shunt/pull/676)), decimal Retry-After handling
+([#518](https://github.com/pleaseai/shunt/pull/518)), Claude Sonnet 5.5 discovery,
+and the gated routing, retry, and budget fixes shipped in v0.50.0–v0.51.1.
+These need no downstream production patches. Keep the Sol-specific cache regression
+and schema/discovery guards; they verify behavior without duplicating implementation.
+
 ## Build dependencies
 
 Default builds use three non-optional git dependencies from
@@ -54,11 +70,11 @@ boundary in `src/routing/` and `src/config/router/` uses them; no feature flag r
 The optional `prefill-router` crate from the same rev links libpython through `pyo3`.
 Release builds do not enable `prefill-router`; CI builds it through `--all-features`.
 
-## Upstream issue audit — 2026-09-27 (re-checked at v0.49.1; #489, #492, #424 and #450 all still open)
+## Upstream issue audit — 2026-09-30 (re-checked at v0.51.1; #489, #492 and #424 still open)
 
 | Issue | Applicability and policy |
 | --- | --- |
-| [#489](https://github.com/pleaseai/shunt/issues/489) | Preventively fixed in the inbound Chat translator. Upstream v0.48.0 has no caller for this translator, and it does not explain a Claude-to-Astra failure. |
+| [#489](https://github.com/pleaseai/shunt/issues/489) | Upstream v0.51.1 still omits regex sanitization in the inbound Responses-to-Chat function schema. Retain the preventive fix; this is separate from Claude-to-Astra translation. |
 | [#492](https://github.com/pleaseai/shunt/issues/492) | Add real regex-lite parsing to the existing Python approximation; pin lookaround, malformed syntax and literal-preservation regressions. This is conservative, not a guarantee of equivalence with every backend. |
 | [skuda lookaround fix](https://github.com/skuda/shunt/commit/87c138c25eb7d7647682660288e04714811ef57e) | Same failure class already fixed here. The exact public Neon email pattern is included in eager and revealed-schema regression tests. |
 | [#424](https://github.com/pleaseai/shunt/issues/424) | Existing progressive-reveal patch renders tool references as text for our non-Anthropic Messages routes. Native Anthropic remains passthrough. |

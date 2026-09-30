@@ -41,6 +41,9 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # tokens_env = "SHUNT_ADMIN_TOKENS"    # (default) env var with name:token pairs
 # session_ttl_secs = 3600              # (default) browser session lifetime
 # pending_ttl_secs = 600               # (default) provisioning-flow lifetime
+# hide_observed = false                # (default) read host CLI/app logins for
+                                       # the dashboard usage table; true never
+                                       # reads them, leaving managed accounts only
 
 # Per-credential admin keys with an id the spend audit trail records. Keys must
 # be at least 32 characters and must come from ${VAR} / ${file:...} or a SHUNT_*
@@ -84,7 +87,8 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # default_threshold_fable = 0.85 # Fable-only 7d_oi bucket
 # burn_rate_avoidance = false    # avoid projected exhaustion before reset
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
-#                                    API for refreshable Claude accounts only;
+#                                    APIs for refreshable Claude, Codex, and
+#                                    Antigravity accounts;
 #                                    values below 60 clamp to 60, fixed at boot
 # state_path = "shunt-state.json"  # (disabled by default) persist per-account
 #                                    quota to this file so a restart warm-starts
@@ -185,9 +189,11 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
                                # "estimate" opts out (404 -> client estimates).
 # websocket = true             # EXPERIMENTAL (issue #32): reach the Codex backend
                                # over the Responses WebSocket v2 transport instead
-                               # of HTTP. Pools a connection per conversation and
-                               # reuses previous_response_id to upload only the new
-                               # input. Only honored for this ChatGPT/Codex backend;
+                               # of HTTP. Pools a connection per resolved
+                               # conversation (the x-claude-code-session-id header
+                               # or a parsed metadata session id) and reuses
+                               # previous_response_id to upload only the new input.
+                               # Only honored for this ChatGPT/Codex backend;
                                # falls back to HTTP if the socket can't be opened.
 
 # --- Optional: pool several ChatGPT accounts behind [providers.codex] instead of

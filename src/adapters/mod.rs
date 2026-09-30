@@ -131,9 +131,7 @@ impl std::error::Error for UpstreamBodyIdle {}
 ///
 /// [`ResponseBounds::default`] — both `None` — is every client turn, which is
 /// read exactly as it always was. Only `routing::serve`'s internal calls set
-/// either field; see [`Adapter::forward`] for which reads honour which — `idle`
-/// is honoured by every single whole-body read, not yet by the accumulations
-/// built from a translated event stream (#667).
+/// either field; see [`Adapter::forward`] for which reads honour which.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ResponseBounds {
     /// Refuse the body the moment it passes this many bytes.
@@ -142,8 +140,32 @@ pub(crate) struct ResponseBounds {
     /// after the headers included. Progress is any chunk for a plain body
     /// ([`collect_upstream_body`]) and a completed non-ping SSE frame for an
     /// event-stream body ([`collect_upstream_sse_body`]), so keep-alives alone
-    /// do not hold a stalled reply open.
+    /// do not hold a stalled reply open. The Responses adapter, which streams
+    /// upstream even for a non-streaming call, starts this clock when it sends
+    /// the request rather than when a collector starts (see [`within_idle`]).
     pub(crate) idle: Option<Duration>,
+}
+
+/// Await `send` — an upstream request on its way to its first sign of
+/// progress — under a gated call's idle clock: `clock` is the gap and the
+/// instant it started, which is when the request was sent.
+///
+/// `None` is every client turn: `send` is awaited as it always was, and no
+/// clock is read. The Responses adapter passes the same start instant on to
+/// its collector, so neither the wait for the headers nor any local work
+/// between them and the collector opens a window the idle gap does not cover.
+/// The bounded input-token estimate runs beside the collector rather than
+/// between them (#703).
+pub(crate) async fn within_idle<F: std::future::Future>(
+    clock: Option<(Duration, tokio::time::Instant)>,
+    send: F,
+) -> Result<F::Output, UpstreamBodyIdle> {
+    match clock {
+        None => Ok(send.await),
+        Some((idle, since)) => tokio::time::timeout_at(since + idle, send)
+            .await
+            .map_err(|_| UpstreamBodyIdle { idle }),
+    }
 }
 
 /// How a bounded whole-body read ended.
@@ -179,7 +201,7 @@ pub(crate) async fn collect_upstream_body(
     cap: Option<usize>,
     idle: Option<Duration>,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
-    collect_bounded_body(upstream, cap, idle, IdleProgress::Chunk).await
+    collect_bounded_body(upstream, cap, idle, None, IdleProgress::Chunk).await
 }
 
 /// [`collect_upstream_body`] for a body that is an SSE stream, read whole — the
@@ -195,12 +217,17 @@ pub(crate) async fn collect_upstream_body(
 /// a frame still arriving — so it adds neither memory against the cap nor a
 /// rescan per chunk. The body returned is every byte received, keep-alives
 /// included, and the cap counts every one of them.
+///
+/// `idle_since` is when the idle clock started: the instant the request was
+/// sent, which the headers do not refresh because they are not content.
+/// `None` starts it here, as [`collect_upstream_body`] always does.
 pub(crate) async fn collect_upstream_sse_body(
     upstream: reqwest::Response,
     cap: Option<usize>,
     idle: Option<Duration>,
+    idle_since: Option<tokio::time::Instant>,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
-    collect_bounded_body(upstream, cap, idle, IdleProgress::SseFrame).await
+    collect_bounded_body(upstream, cap, idle, idle_since, IdleProgress::SseFrame).await
 }
 
 /// What refreshes a bounded read's idle deadline.
@@ -217,6 +244,7 @@ async fn collect_bounded_body(
     upstream: reqwest::Response,
     cap: Option<usize>,
     idle: Option<Duration>,
+    idle_since: Option<tokio::time::Instant>,
     progress: IdleProgress,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
     if cap.is_none() && idle.is_none() {
@@ -257,7 +285,7 @@ async fn collect_bounded_body(
     // An absolute deadline, not a per-poll timeout: a chunk that is not
     // progress must leave it where it was, which re-arming a timeout on every
     // poll could not do.
-    let mut deadline = idle.map(|idle| tokio::time::Instant::now() + idle);
+    let mut deadline = idle.map(|idle| idle_since.unwrap_or_else(tokio::time::Instant::now) + idle);
     // Frame boundaries over `collected` itself: indices only, no second copy.
     let mut frames = crate::routing::serve::bounds::IncrementalFrameScanner::default();
     loop {
@@ -356,7 +384,12 @@ pub(crate) trait Adapter {
     /// neither — one that relays every byte onward without holding it — has
     /// nothing to cap and ignores it; the bound then falls to
     /// `routing::serve`'s own collector, which reads the relayed stream under
-    /// the same cap.
+    /// the same cap. What a byte is depends on what the adapter receives: the
+    /// body as it arrived for a whole-body read, each event's name and
+    /// compact-JSON payload on the Responses WebSocket, `agy`'s stdout (one
+    /// byte per stripped newline included) on Antigravity, and the retained
+    /// text and tool-call fields on Cursor, whose protobuf framing is not
+    /// counted.
     ///
     /// `idle` (`gated_idle_ms`, set only on gated calls) is honoured by every
     /// single whole-body read: through [`collect_upstream_body`] — any chunk
@@ -365,10 +398,13 @@ pub(crate) trait Adapter {
     /// error-body prefetch in `map_upstream_error`; and through
     /// [`collect_upstream_sse_body`] — only a completed non-ping SSE frame is
     /// progress, so keep-alives alone do not hold it open — for the Responses
-    /// HTTP `json_response`. The accumulations do not apply it yet (the
-    /// Responses WebSocket `json_events_response`, Antigravity's
-    /// `drain_non_streaming`; #667), so a stall there is bounded by the call's
-    /// wall-clock bound (`gated_max_duration_ms`) rather than by the idle gap.
+    /// HTTP `json_response`. Two accumulations apply it between the pieces
+    /// they accumulate: the Responses WebSocket (the first-event peek in
+    /// `open_ws_turn`, then `json_events_response` — any event is progress)
+    /// and Antigravity's `drain_non_streaming` (a line whose translation
+    /// carries a non-ping frame is progress). Cursor's `aggregate_turn` does
+    /// not: its agent stream already ends a turn that goes quiet on its own
+    /// first-byte and idle timeouts (#667).
     fn forward<'a>(
         &'a self,
         state: AppState,

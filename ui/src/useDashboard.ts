@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { accountGroups } from './accounts';
 import { API, readJson } from './api';
+import { useSession } from './session';
 import type {
   AccountRow,
   AntigravityStoreAccount,
@@ -57,12 +58,21 @@ export interface Dashboard {
 }
 
 export function useDashboard(): Dashboard {
+  const { hideObserved } = useSession();
+
   const loadObserved = useCallback(async (): Promise<Loadable<Map<string, AccountRow[]>>> => {
-    const observed = await readJson<{ accounts?: ObservedAccount[] }>(
-      `${API}/observed`,
-      'Failed to observe local accounts',
-    );
-    if (!observed.ok) return { status: 'error', message: observed.message };
+    // Under `[server.admin] hide_observed` the endpoint answers an empty list
+    // by contract, so the read is skipped rather than made for nothing. The
+    // table still renders: managed pool accounts are not observations.
+    let observations: ObservedAccount[] = [];
+    if (!hideObserved) {
+      const observed = await readJson<{ accounts?: ObservedAccount[] }>(
+        `${API}/observed`,
+        'Failed to observe local accounts',
+      );
+      if (!observed.ok) return { status: 'error', message: observed.message };
+      observations = observed.data.accounts ?? [];
+    }
 
     // Managed pool state only enriches this view, so each read stands alone: a
     // transient failure on either endpoint must not discard the other's result,
@@ -78,13 +88,13 @@ export function useDashboard(): Dashboard {
     return {
       status: 'ready',
       data: accountGroups(
-        observed.data.accounts ?? [],
+        observations,
         pool.ok ? pool.data : null,
         accounts.ok ? accounts.data : null,
         codexAccounts.ok ? codexAccounts.data : null,
       ),
     };
-  }, []);
+  }, [hideObserved]);
 
   const loadAccounts = useCallback(async (): Promise<Loadable<ClaudeStoreAccount[]>> => {
     const result = await readJson<{ accounts?: ClaudeStoreAccount[] }>(
