@@ -44,6 +44,7 @@ pub struct GeminiSseMachine {
     active_block: Option<ActiveBlock>,
     saw_tool_use: bool,
     input_tokens: u64,
+    cached_input_tokens: u64,
     output_tokens: u64,
     last_finish_reason: Option<String>,
     accumulate_content: bool,
@@ -62,6 +63,7 @@ impl GeminiSseMachine {
             active_block: None,
             saw_tool_use: false,
             input_tokens: 0,
+            cached_input_tokens: 0,
             output_tokens: 0,
             last_finish_reason: None,
             accumulate_content: true,
@@ -102,6 +104,9 @@ impl GeminiSseMachine {
                 if let Some(prompt) = usage.get("promptTokenCount").and_then(Value::as_u64) {
                     self.input_tokens = prompt;
                 }
+                if let Some(cached) = usage.get("cachedContentTokenCount").and_then(Value::as_u64) {
+                    self.cached_input_tokens = cached;
+                }
             }
 
             events.push(SseEvent {
@@ -117,7 +122,8 @@ impl GeminiSseMachine {
                         "stop_reason": null,
                         "stop_sequence": null,
                         "usage": {
-                            "input_tokens": self.input_tokens,
+                            "input_tokens": self.input_tokens.saturating_sub(self.cached_input_tokens),
+                            "cache_read_input_tokens": self.cached_input_tokens.min(self.input_tokens),
                             "output_tokens": 0
                         }
                     }
@@ -127,6 +133,9 @@ impl GeminiSseMachine {
 
         // Update usage metadata if present
         if let Some(usage) = chunk.get("usageMetadata") {
+            if let Some(cached) = usage.get("cachedContentTokenCount").and_then(Value::as_u64) {
+                self.cached_input_tokens = cached;
+            }
             if let Some(prompt) = usage.get("promptTokenCount").and_then(Value::as_u64) {
                 self.input_tokens = prompt;
             }
@@ -410,6 +419,8 @@ impl GeminiSseMachine {
                     "stop_sequence": null
                 },
                 "usage": {
+                    "input_tokens": self.input_tokens.saturating_sub(self.cached_input_tokens),
+                    "cache_read_input_tokens": self.cached_input_tokens.min(self.input_tokens),
                     "output_tokens": self.output_tokens
                 }
             }),
@@ -446,7 +457,8 @@ impl GeminiSseMachine {
             "stop_reason": stop_reason,
             "stop_sequence": null,
             "usage": {
-                "input_tokens": self.input_tokens,
+                "input_tokens": self.input_tokens.saturating_sub(self.cached_input_tokens),
+                "cache_read_input_tokens": self.cached_input_tokens.min(self.input_tokens),
                 "output_tokens": self.output_tokens
             }
         })
@@ -531,6 +543,49 @@ pub fn map_gemini_error(status: StatusCode, body: &str) -> AdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_usage_is_reported_at_start_finish_and_in_non_streaming_json() {
+        for cached in [0, 40, 150] {
+            let mut machine = GeminiSseMachine::new("gemini-test");
+            let events = machine.process_chunk(&json!({
+                "response": {
+                    "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                    "usageMetadata": {"promptTokenCount": 100, "cachedContentTokenCount": cached, "candidatesTokenCount": 2}
+                }
+            }));
+            let start = &events[0].data["message"]["usage"];
+            let finish = &events
+                .iter()
+                .find(|e| e.event == "message_delta")
+                .unwrap()
+                .data["usage"];
+            let final_json = machine.final_json();
+            for usage in [start, finish, &final_json["usage"]] {
+                assert_eq!(usage["input_tokens"], 100_u64.saturating_sub(cached));
+                assert_eq!(usage["cache_read_input_tokens"], cached.min(100));
+                assert!(usage.get("cache_creation").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cache_usage_arriving_only_in_last_chunk_reaches_message_delta() {
+        let mut machine = GeminiSseMachine::new("gemini-test");
+        machine.process_chunk(&json!({"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}));
+        let events = machine.process_chunk(&json!({
+            "candidates": [{"finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 100, "cachedContentTokenCount": 40, "candidatesTokenCount": 2}
+        }));
+        let usage = &events
+            .iter()
+            .find(|e| e.event == "message_delta")
+            .unwrap()
+            .data["usage"];
+        assert_eq!(usage["input_tokens"], 60);
+        assert_eq!(usage["cache_read_input_tokens"], 40);
+        assert_eq!(usage["output_tokens"], 2);
+    }
 
     #[test]
     fn sse_machine_emits_text_stream() {

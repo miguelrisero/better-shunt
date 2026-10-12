@@ -181,6 +181,55 @@ async fn get_protocol_returns_descriptor_format_and_version() {
 }
 
 #[tokio::test]
+async fn messages_preserves_mixed_cache_ttls_beta_header_and_usage_breakdown() {
+    let _env = common::set_env(&[]).await;
+    if !can_bind_loopback() {
+        return;
+    }
+    let upstream = MockServer::start().await;
+    let body = json!({
+        "model": "claude-opus-4-1", "max_tokens": 16, "stream": true,
+        "system": [{"type": "text", "text": "Stable instructions", "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral", "ttl": "5m"}}]}]
+    });
+    let sse = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"cache_read_input_tokens\":2,\"cache_creation_input_tokens\":30,\"cache_creation\":{\"ephemeral_5m_input_tokens\":10,\"ephemeral_1h_input_tokens\":20}}}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+    );
+    let bytes = serde_json::to_vec(&body).unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(ExactBody(bytes.clone()))
+        .and(ExactHeader(
+            "anthropic-beta",
+            "extended-cache-ttl-2025-04-11,other=value",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header(
+            "anthropic-beta",
+            "extended-cache-ttl-2025-04-11,other=value",
+        )
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), sse);
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn messages_forwards_anthropic_headers_verbatim_and_preserves_query() {
     if !can_bind_loopback() {
         return;

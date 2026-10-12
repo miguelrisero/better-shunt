@@ -153,6 +153,8 @@ struct TokenUsage {
     output: Option<u64>,
     cache_read: Option<u64>,
     cache_creation: Option<u64>,
+    cache_creation_5m: Option<u64>,
+    cache_creation_1h: Option<u64>,
 }
 
 struct ObserverState {
@@ -445,6 +447,8 @@ impl ObserverState {
             ("output", self.tokens.output),
             ("cache_read", self.tokens.cache_read),
             ("cache_creation", self.tokens.cache_creation),
+            ("cache_creation_5m", self.tokens.cache_creation_5m),
+            ("cache_creation_1h", self.tokens.cache_creation_1h),
         ] {
             if let Some(count) = count {
                 crate::metrics::record_stream_tokens(
@@ -625,6 +629,8 @@ fn merge_tokens(target: &mut TokenUsage, observed: TokenUsage) {
         (&mut target.output, observed.output),
         (&mut target.cache_read, observed.cache_read),
         (&mut target.cache_creation, observed.cache_creation),
+        (&mut target.cache_creation_5m, observed.cache_creation_5m),
+        (&mut target.cache_creation_1h, observed.cache_creation_1h),
     ] {
         if observed.is_some() {
             *target = observed;
@@ -779,6 +785,14 @@ fn update_tokens(tokens: &mut TokenUsage, usage: &Value, anthropic: bool) {
         set_u64(
             &mut tokens.cache_creation,
             usage.get("cache_creation_input_tokens"),
+        );
+        set_u64(
+            &mut tokens.cache_creation_5m,
+            usage.pointer("/cache_creation/ephemeral_5m_input_tokens"),
+        );
+        set_u64(
+            &mut tokens.cache_creation_1h,
+            usage.pointer("/cache_creation/ephemeral_1h_input_tokens"),
         );
     } else {
         set_u64(

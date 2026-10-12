@@ -19,6 +19,10 @@
 
 内置了 OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、智谱、MiniMax 国内版、OpenCode Zen、Gemini、Antigravity 以及 Anthropic 透传,其中不少可以直接复用你已经在付费的订阅。任何兼容 Anthropic-Messages 的后端只需一个配置表即可接入,无需改动代码。参见[提供方](#提供方)。
 
+提示词缓存保留客户端选择的 Anthropic TTL。流式指标提供 5m/1h 写入明细，
+Gemini 与 Codex 一样报告缓存输入。主会话和驱动代理的选择性 TTL 配置及记录验证，
+参见[缓存设置与提供方行为](docs/prompt-caching.md)。
+
 > [!NOTE]
 > `shunt` 是仍在活跃开发中的 1.0 之前(pre-1.0)软件。按照 [SemVer](https://semver.org/lang/zh-CN/#spec) 惯例,`0.x` 版本可能包含对配置键、CLI 和行为的破坏性变更(breaking change) —— 升级前请查看[发布说明](https://github.com/pleaseai/shunt/releases)。
 

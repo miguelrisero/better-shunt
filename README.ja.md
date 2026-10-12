@@ -19,6 +19,11 @@
 
 OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、Zhipu、MiniMax 中国版、OpenCode Zen、Gemini、Antigravity、Anthropic パススルーが標準搭載されており、その多くはすでに契約済みのサブスクリプションをそのまま再利用します。Anthropic Messages 互換のバックエンドであれば設定テーブルを 1 つ書くだけで、コード変更なしに追加できます。[プロバイダー](#プロバイダー)を参照してください。
 
+プロンプトキャッシュはクライアントの Anthropic TTL 設定を維持します。ストリーミング
+メトリクスで 5m/1h の書き込み内訳を確認でき、Gemini も Codex と同様にキャッシュ済み
+入力を報告します。メインセッションとドライバーの選択的 TTL と記録の検証については
+[キャッシュ設定とプロバイダーの動作](docs/prompt-caching.md)を参照してください。
+
 > [!NOTE]
 > `shunt` は活発に開発中の 1.0 未満（pre-1.0）ソフトウェアです。[SemVer](https://semver.org/lang/ja/#spec) の慣例に従い、`0.x` リリースには設定キー・CLI・動作に対する破壊的変更（breaking change）が含まれる場合があります。アップグレード前に[リリースノート](https://github.com/pleaseai/shunt/releases)を確認してください。
 

@@ -47,13 +47,23 @@ authorization = "Bearer <token>"
 
 ### メトリクス系列
 
+`cache_creation_5m` と `cache_creation_1h` は、上流が報告した Anthropic TTL の
+内訳です。`cache_creation` に含まれるため、総入力に再加算しないでください。
+報告されない内訳は生成しません。Gemini が報告するキャッシュ済み入力は
+`cache_read` に含め、未キャッシュの `input` から差し引きます。書き込み TTL は
+推測しません。Shunt はネイティブのキャッシュマーカーとベータヘッダーをそのまま
+転送します。長時間のメイン会話には Claude Code の `promptCacheTtl` を `1h` に、
+ドライバーの frontmatter には `experimental.cacheTtl: 1h` を設定し、グローバルな
+サブエージェント TTL は未設定にします。クライアントを再起動し、実際の使用量を
+確認してください。[Claude Code のキャッシュ](https://code.claude.com/docs/en/prompt-caching)を参照してください。
+
 | 系列 | 種類 | 属性 | 意味 |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | カウンター | `provider`, `model`, `http.response.status_code`, `caller` | プロキシされた推論リクエスト。`caller` はインバウンドのトラフィックなら `client`、[`[models.router]`](/ja/reference/configuration/) エントリが呼び出し元に代わって行ったジャッジ呼び出しなら `router`。 |
 | `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code`, `caller` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。コミット型ストリーミング応答はヘッダーがアップストリーム応答より先にコミットされるため、ディスパッチから試行分類までを測定します。 |
 | `shunt.ttft` | ヒストグラム(ms) | `provider`, `model` | リクエスト開始から最初の完全な非キープアライブ SSE フレームまでの時間。 |
 | `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
-| `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
+| `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`, `cache_creation_5m`, `cache_creation_1h`)。非ストリーミングは記録しない。 |
 | `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
 | `shunt.codex_ws_overflow` | カウンター | `provider`, `outcome` | 並行 turn が専用 overflow 接続を開いた場合は `opened`、接続上限で拒否された場合は `refused`（issue #248）。 |
 | `shunt.codex_client_events` | カウンター | `event` | サニタイズ済みイベント名ごとの Codex CLI analytics イベント。payload とプロパティは破棄される。 |

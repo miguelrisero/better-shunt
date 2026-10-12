@@ -19,6 +19,11 @@
 
 OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, OpenCode Zen, Gemini, Antigravity, Anthropic 패스스루가 기본 내장되어 있고, 이 가운데 여럿은 이미 결제 중인 구독을 그대로 재사용합니다. Anthropic Messages 호환 백엔드라면 무엇이든 구성 테이블 하나로 붙일 수 있으며, 코드 변경은 필요 없습니다. [프로바이더](#프로바이더)를 참고하세요.
 
+프롬프트 캐싱은 클라이언트의 Anthropic TTL 선택을 유지합니다. 스트리밍 메트릭은
+5m/1h 쓰기 내역을 제공하며 Gemini도 Codex처럼 캐시 입력을 보고합니다.
+메인 세션과 드라이버의 선택적 TTL 및 트랜스크립트 검증은
+[캐시 설정과 프로바이더 동작](docs/prompt-caching.md)을 참고하세요.
+
 > [!NOTE]
 > `shunt`는 활발히 개발 중인 1.0 미만(pre-1.0) 소프트웨어입니다. [SemVer](https://semver.org/lang/ko/#spec) 관례에 따라 `0.x` 릴리스에는 설정 키, CLI, 동작에 대한 호환성이 깨지는 변경(breaking change)이 포함될 수 있으니, 업그레이드 전에 [릴리스 노트](https://github.com/pleaseai/shunt/releases)를 확인하세요.
 

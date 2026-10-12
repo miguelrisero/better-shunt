@@ -19,6 +19,11 @@ The name is the mechanism: an electrical/railway *shunt* diverts a selected part
 
 Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax China, OpenCode Zen, Gemini, Antigravity, and Anthropic passthrough ship built in — several of them reusing a subscription you already pay for. Any Anthropic-Messages-compatible backend is one config table away, with no code changes. See [Providers](#providers).
 
+Prompt caching keeps the client's Anthropic TTL choices intact. Streaming metrics
+expose 5m/1h write breakdowns, and Gemini reports cached input alongside Codex.
+See [cache settings and provider behavior](docs/prompt-caching.md) for selective
+main-session/driver TTLs and transcript verification.
+
 > [!NOTE]
 > `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
 
