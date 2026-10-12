@@ -309,6 +309,49 @@ fn message_delta_updates_any_input_fields_it_reports() {
 }
 
 #[test]
+fn anthropic_cache_ttl_breakdown_survives_fragmented_and_partial_usage() {
+    let mut observer = state(Protocol::Anthropic);
+    let start = anth_event(
+        "message_start",
+        json!({"message": {"usage": {
+            "cache_creation_input_tokens": 30,
+            "cache_creation": {"ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 20}
+        }}}),
+    );
+    for bytes in start.as_bytes().chunks(3) {
+        observer.push_bytes(bytes);
+    }
+    observer
+        .push_bytes(anth_event("message_delta", json!({"usage": {"output_tokens": 4}})).as_bytes());
+    assert_eq!(observer.tokens.cache_creation, Some(30));
+    assert_eq!(observer.tokens.cache_creation_5m, Some(10));
+    assert_eq!(observer.tokens.cache_creation_1h, Some(20));
+    observer.push_bytes(
+        anth_event(
+            "message_delta",
+            json!({"usage": {"cache_creation": {"ephemeral_1h_input_tokens": 0}}}),
+        )
+        .as_bytes(),
+    );
+    assert_eq!(observer.tokens.cache_creation_5m, Some(10));
+    assert_eq!(observer.tokens.cache_creation_1h, Some(0));
+}
+
+#[test]
+fn absent_cache_ttl_breakdown_is_not_inferred_from_total_writes() {
+    let mut observer = state(Protocol::Anthropic);
+    observer.push_bytes(
+        anth_event(
+            "message_start",
+            json!({"message": {"usage": {"cache_creation_input_tokens": 40}}}),
+        )
+        .as_bytes(),
+    );
+    assert_eq!(observer.tokens.cache_creation_5m, None);
+    assert_eq!(observer.tokens.cache_creation_1h, None);
+}
+
+#[test]
 fn parses_crlf_boundaries() {
     let mut observer = state(Protocol::Anthropic);
     observer.push_bytes(b"event: message_st");

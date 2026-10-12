@@ -250,8 +250,9 @@ pub fn record_stream_outcome(provider: &str, model: &str, outcome: &'static str)
 }
 
 /// Add one last-seen token count from a completed or interrupted SSE stream.
-/// `kind` is one of `input`, `output`, `cache_read`, or `cache_creation`; absent
-/// usage fields are not emitted by the stream observer.
+/// `kind` is `input`, `output`, `cache_read`, `cache_creation`, or an Anthropic
+/// write breakdown (`cache_creation_5m`, `cache_creation_1h`). The breakdowns
+/// overlap the total; absent usage fields are not emitted by the observer.
 pub fn record_stream_tokens(provider: &str, model: &str, kind: &'static str, count: u64) {
     sentry::metrics::counter("shunt.tokens", count as f64)
         .attribute("provider", provider.to_owned())

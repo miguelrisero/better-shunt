@@ -47,13 +47,21 @@ authorization = "Bearer <token>"
 
 ### 指标序列
 
+`cache_creation_5m` 和 `cache_creation_1h` 保留上游报告的 Anthropic TTL 明细。
+它们已包含在 `cache_creation` 中，不要再次计入总输入。未报告的明细不会被补造。
+Gemini 报告的缓存提示词 token 计入 `cache_read`，并从未缓存的 `input` 中扣除；
+不会推测写入 TTL。Shunt 原样转发原生缓存标记和 beta 标头。长时间运行的主会话
+可将 Claude Code 的 `promptCacheTtl` 设为 `1h`，驱动代理 frontmatter 设为
+`experimental.cacheTtl: 1h`，并保持全局子代理 TTL 未设置。重启客户端后检查实际用量，
+参见 [Claude Code 缓存文档](https://code.claude.com/docs/en/prompt-caching)。
+
 | 序列 | 类型 | 属性 | 含义 |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code`, `caller` | 代理的推理请求。`caller` 对入站流量为 `client`，对 [`[models.router]`](/zh-cn/reference/configuration/) 条目代表调用方发起的裁判调用为 `router`。 |
 | `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code`, `caller` | 流式响应为到 header 的延迟；其他响应为完整延迟。提交式流式响应因 header 在上游响应前提交，测量从分发到尝试分类的时间。 |
 | `shunt.ttft` | 直方图(ms) | `provider`, `model` | 从请求开始到第一个完整的非保活 SSE 帧的时间。 |
 | `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
-| `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
+| `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`、`cache_creation_5m`、`cache_creation_1h`）；不记录非流式用量。 |
 | `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |
 | `shunt.codex_ws_overflow` | 计数器 | `provider`, `outcome` | 并发 turn 使用专用 overflow 连接时记录 `opened`，达到连接上限被拒绝时记录 `refused`（issue #248）。 |
 | `shunt.codex_client_events` | 计数器 | `event` | 按净化后的事件名称统计 Codex CLI 分析事件；payload 和属性会被丢弃。 |

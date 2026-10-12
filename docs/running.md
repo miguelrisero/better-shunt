@@ -186,6 +186,16 @@ provider = "openai"
 # authorization = "Bearer <token>"
 ```
 
+The two TTL kinds are Anthropic's reported `usage.cache_creation` breakdown,
+not additional input tokens: do not add them to `cache_creation`. They are absent
+when the upstream omits that breakdown; the gateway never guesses a TTL from
+the total. Native Anthropic forwards cache markers and the beta header unchanged.
+Gemini translates reported `cachedContentTokenCount` into `cache_read_input_tokens`
+and subtracts it from uncached input, including final streaming usage. No
+Anthropic write TTL or paid explicit Gemini cache is inferred or created.
+See [prompt cache behavior](prompt-caching.md) for selective client settings and
+provider boundaries.
+
 Both metric sinks export the same low-cardinality series:
 
 | Series | Type | Attributes | Meaning |
@@ -194,7 +204,7 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses; the committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
 | `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first complete non-keepalive SSE frame. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
-| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, `cache_creation`, `cache_creation_5m`, or `cache_creation_1h`; non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` (issue #248). |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient retries. |

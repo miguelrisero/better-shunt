@@ -47,13 +47,23 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 
 ### Metric series
 
+`cache_creation_5m` and `cache_creation_1h` preserve the upstream's Anthropic TTL
+breakdown. They overlap `cache_creation`; do not add them to total input. An
+omitted breakdown stays absent. Gemini's reported cached prompt tokens are
+included in `cache_read` and subtracted from uncached `input`; no write TTL is
+inferred. Shunt forwards native cache markers and beta headers unchanged. Set
+Claude Code's `promptCacheTtl` to `1h` for long main conversations and
+`experimental.cacheTtl: 1h` in long-running driver frontmatter, leaving the global
+subagent TTL unset. Restart the client and verify real usage; see
+[Claude Code caching](https://code.claude.com/docs/en/prompt-caching).
+
 | Series | Type | Attributes | Meaning |
 | :-- | :-- | :-- | :-- |
 | `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code`, `caller` | Proxied inference requests. `caller` is `client` for inbound traffic and `router` for a judge call a [`[models.router]`](/reference/configuration/) entry made on the caller's behalf. |
 | `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code`, `caller` | Header latency for streams; full latency otherwise. The committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
 | `shunt.ttft` | Histogram (ms) | `provider`, `model` | Request start to the first complete non-keepalive SSE frame. |
 | `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
-| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`, `cache_creation_5m`, `cache_creation_1h`). Non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` for a concurrent turn (issue #248). |
 | `shunt.codex_client_events` | Counter | `event` | Codex CLI analytics events by sanitized event name; payloads and properties are discarded. |
