@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.55.1](https://github.com/pleaseai/shunt/compare/v0.55.0...v0.55.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **grok:** bump x-grok-client-version to 1.0.46 ([#759](https://github.com/pleaseai/shunt/issues/759)) ([ffeed16](https://github.com/pleaseai/shunt/commit/ffeed163ab5c7ad9b457a77afc245b9886f04863)), closes [#755](https://github.com/pleaseai/shunt/issues/755)
+
+## [0.55.0](https://github.com/pleaseai/shunt/compare/v0.54.1...v0.55.0) (2026-10-07)
+
+
+### Features
+
+* **plugins:** usage band for the shunt mod, with gateway login on GET /usage ([#746](https://github.com/pleaseai/shunt/issues/746)) ([532f5c7](https://github.com/pleaseai/shunt/commit/532f5c7b4e9ec01d02c7509a26f0e829acb92780))
+
+## [0.54.1](https://github.com/pleaseai/shunt/compare/v0.54.0...v0.54.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **usage:** measure /usage remaining headroom up to each account's max_utilization cap ([#745](https://github.com/pleaseai/shunt/issues/745)) ([7b334ed](https://github.com/pleaseai/shunt/commit/7b334ed5f9636bbcf1ac5939d24b88939aa36c23))
+
+## [0.54.0](https://github.com/pleaseai/shunt/compare/v0.53.0...v0.54.0) (2026-10-05)
+
+
+### Features
+
+* **admin:** show per-window max_utilization caps in the dashboard ([#740](https://github.com/pleaseai/shunt/issues/740)) ([ab9f55f](https://github.com/pleaseai/shunt/commit/ab9f55f1d0344ed165a2425220125e5d27f2a2ec))
+
+
+### Bug Fixes
+
+* **ui:** admin dashboard follow-ups from [#740](https://github.com/pleaseai/shunt/issues/740) browser check ([#742](https://github.com/pleaseai/shunt/issues/742)) ([f09740f](https://github.com/pleaseai/shunt/commit/f09740fc7e87449e7c862bb7265c6af19964c5a7))
+
+## [0.53.0](https://github.com/pleaseai/shunt/compare/v0.52.0...v0.53.0) (2026-10-04)
+
+
+### Features
+
+* **pool:** add per-window max_utilization hard caps ([#738](https://github.com/pleaseai/shunt/issues/738)) ([d76774b](https://github.com/pleaseai/shunt/commit/d76774b35c3fd70bcec3d413c323f4bd6892f99f))
+* **spend:** add [server.spend.pricing] multiplier and override rates ([#472](https://github.com/pleaseai/shunt/issues/472)) ([bc0557b](https://github.com/pleaseai/shunt/commit/bc0557b51326f1ac2fb3c0138208faca6841858a))
+* **spend:** resolve router targets and judges in pricing reachability ([#737](https://github.com/pleaseai/shunt/issues/737)) ([be606d7](https://github.com/pleaseai/shunt/commit/be606d783032a17c46288ee5fc3a919e2b76a171))
+
+
+### Bug Fixes
+
+* **responses:** cut a gated error body that sends no byte within the envelope budget ([#729](https://github.com/pleaseai/shunt/issues/729)) ([ce91e46](https://github.com/pleaseai/shunt/commit/ce91e4628fd3640a21dec30290c987bd47d43c76))
+
+## [0.52.0](https://github.com/pleaseai/shunt/compare/v0.51.1...v0.52.0) (2026-10-02)
+
+
+### Features
+
+* **admin:** report per-account request counters on the pool endpoint ([#691](https://github.com/pleaseai/shunt/issues/691)) ([d149a6d](https://github.com/pleaseai/shunt/commit/d149a6dabdd778e157df39066561a6874ae60a65))
+* **auth:** accept verify-only inbound JWTs from an external IdP ([#351](https://github.com/pleaseai/shunt/issues/351)) ([696f93e](https://github.com/pleaseai/shunt/commit/696f93e908df276a039248444fed87235e305471))
+* **codex:** add inbound Responses WebSocket transport ([#519](https://github.com/pleaseai/shunt/issues/519)) ([fafcd4a](https://github.com/pleaseai/shunt/commit/fafcd4ad33586fca2fe739afcf329994f7998476))
+* **gemini:** harden semantic state, SSE framing, and tool pairing ([#520](https://github.com/pleaseai/shunt/issues/520)) ([5fdf981](https://github.com/pleaseai/shunt/commit/5fdf98114ad295f054a71b84ed17276946897cc6))
+* **pool:** runtime account pause and reset-priority sort ([#656](https://github.com/pleaseai/shunt/issues/656)) ([777e510](https://github.com/pleaseai/shunt/commit/777e5103585469c81a8e16af675e01cce6523513))
+
+
+### Bug Fixes
+
+* **codex:** count only data-less SSE blocks against the per-chunk frame cap ([#727](https://github.com/pleaseai/shunt/issues/727)) ([ac35192](https://github.com/pleaseai/shunt/commit/ac35192010c7c46d6649fabe84ea7a957f401646))
+* **codex:** sync with openai/codex rust-v0.159.3 ([#723](https://github.com/pleaseai/shunt/issues/723)) ([266e943](https://github.com/pleaseai/shunt/commit/266e943f3098fd5e2e433ddd7216ef68881f31a9))
+* **codex:** use AtomicUsize::try_update for the overflow-slot claim ([#724](https://github.com/pleaseai/shunt/issues/724)) ([3ddec3f](https://github.com/pleaseai/shunt/commit/3ddec3f2d1239ef2e071928814838d9e5cc881fc))
+
 ## [0.51.1](https://github.com/pleaseai/shunt/compare/v0.51.0...v0.51.1) (2026-09-30)
 
 

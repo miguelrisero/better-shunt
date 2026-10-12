@@ -48,6 +48,42 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 `tokens_env` 자신의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고) — shunt가 토큰을 읽어오는 환경 변수 이름을 가리키는 역할은 그대로입니다.
 
+### `[[server.auth.jwt]]` (선택)
+
+인바운드 자격 증명의 두 번째 종류를 추가하는 테이블 배열입니다. 외부 identity provider가 발급한 JWT를 shunt가 **검증만 하고 발급은 전혀 하지 않습니다** — 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. 클라이언트는 정적 토큰과 똑같이(base URL + bearer) 구성하므로, `[server.gateway]` 로그인과 달리 Claude Code를 gateway provider 모드로 넣지 않고 그 모드가 비활성화하는 클라이언트 기능도 잃지 않습니다. [동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)를 참고하세요.
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer가 구성되면 선택
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt 전용 client id>"]
+email_domains = ["example.com"]
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `issuer` | 필수 | 정확한 `iss` 일치. HTTPS여야 하며 `localhost`와 `127.0.0.1`에서만 HTTP 허용, 경로는 가능 |
+| `audience` | 필수 | 허용되는 `aud` 값. 문자열 또는 배열 |
+| `email_domains` | `[]` | 대소문자 무시 도메인. 마지막 `@` 뒤 부분과 **정확히** 일치해야 하며 접미사 매칭이 아님 |
+| `allowed_emails` | `[]` | 대소문자 무시 전체 이메일 주소 |
+| `algorithms` | `["RS256"]` | 허용되는 서명 알고리즘. 비대칭만 가능 |
+| `authorized_parties` | `audience` | `azp` 클레임이 있을 때 허용되는 값 |
+| `clock_skew_seconds` | `0` | `exp`와 `nbf`에 적용되는 허용 오차 |
+| `max_token_age_seconds` | `3600` | `exp - iat`가 이 값을 넘으면 거부 |
+| `jwks_url` | discovery | discovery 문서를 제공하지 않는 issuer용 명시적 JWKS 엔드포인트 |
+
+각 항목에는 `issuer`, `audience`, 그리고 `email_domains` 또는 `allowed_emails` 값이 최소 하나 필요합니다. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
+
+항목이 하나라도 있으면 `tokens_env`는 비어 있어도 됩니다 — 인증을 전부 IdP로 하는 배포에는 설정할 정적 토큰이 없습니다. 토큰 목록도 항목도 없으면 `[server.auth]`는 여전히 시작에 실패합니다.
+
+JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, 이메일 허용 목록을 확인합니다. 검증된 이메일이 로그와 사용량 귀속에서 호출자 신원이 되며, 256바이트를 넘는 주소는 잘라내지 않고 거부합니다. 게이팅되는 라우트는 `[server.auth]`가 이미 보호하는 라우트입니다: 자격 증명을 주입하는 `/v1/messages`와 `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage`(loopback이 아닐 때만), 그리고 인바운드 Codex 엔드포인트(HTTP, WebSocket, analytics).
+
+key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않습니다. 캐시된 key set은 최대 5분 동안만 신뢰하고, 그 뒤에는 다음 요청이 재조회를 시도합니다(60초 재조회 하한 적용). 재조회에 성공하면 key set을 통째로 교체하므로 issuer가 철회한 키는 약 5분 안에 검증에서 빠집니다. 재조회에 실패하면 IdP 장애가 전면 장애로 번지지 않도록 만료된 key set을 계속 쓰고, discovery 자체가 실패하면 마지막으로 발견한 `jwks_uri`를 대신 시도합니다. config reload는 항목의 `issuer`와 `jwks_url`이 모두 그대로일 때만 캐시된 키를 유지합니다. 알 수 없는 `kid`는 key set당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, 검증된 항목이 없으면서 토큰의 issuer와 일치하는 항목 중 캐시된 key set이 없는데 가져오기도 실패한 것이 있으면 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
+
+shunt는 취소(revocation) 상태를 보관하지 않으므로 유효한 토큰은 만료될 때까지 동작합니다. 그 범위를 제한하는 것이 `max_token_age_seconds`이며, issuer는 분 단위 수명의 토큰을 발급해야 합니다. 허용 목록에서 도메인이나 주소를 제거하면 다음 요청부터 적용됩니다.
+
 ## `[server.admin]` (선택)
 
 이 테이블의 존재가 브라우저 계정 프로비저닝과 계정 풀 상태를 위한 관리자 웹 화면을 활성화합니다([상세](/ko/guides/admin-remote-provisioning/)). 테이블이 없으면 `/admin*` 라우트는 하나도 등록되지 않습니다. 같은 자격 증명이 [`[server.spend]`](#serverspend-선택) spend-limit API도 인증합니다.
@@ -104,6 +140,43 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
 
 관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
+
+### `[server.spend.pricing]` (선택)
+
+요청의 비용을 정의합니다. 테이블을 생략하면 내장 정가에 multiplier 1이 적용됩니다. 테이블과 resolver는 부팅 시 검증되지만, stage 1에는 토큰 사용량을 읽는 meter가 없으므로 아직 어떤 요청도 가격이 매겨지지 않습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | 정가와 override를 가리지 않고 확정된 모든 rate에 곱해집니다. 할인을 표현하므로 최소 `0.000001`, 최대 `1` |
+
+각 `[[server.spend.pricing.overrides]]` 행은 한 upstream의 한 모델에 대해 정가를 대체합니다.
+
+| 키 | 필수 | 의미 |
+| :-- | :-- | :-- |
+| `upstream` | 예 | 구성된 upstream 이름이어야 함 |
+| `model` | 예 | 클라이언트 또는 upstream 모델 id. 대소문자 구분 없이 매칭 |
+| `input`, `output`, `cache_read`, `cache_write` | 예 | 100만 토큰당 USD. 각각 최소 `0.001`, 최대 `18,446,744,073` |
+
+rate는 토큰당 정수 femto-USD(1e-15 USD)로 저장됩니다. 두 하한은 그 곱이 정확히 토큰당 1 femto-USD, 즉 meter가 표현할 수 있는 가장 작은 0이 아닌 rate가 되도록 정해져 있습니다. 따라서 허용되는 rate와 multiplier의 조합은 항상 토큰당 1 femto-USD 이상으로 계산됩니다. 하한 아래 값을 거부하는 이유는, 다른 쪽 값이 충분히 작으면 곱이 `0`으로 내림되어 유효한 할인처럼 보이면서 실제로는 요청 가격이 0이 되기 때문입니다.
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+범위를 벗어난 multiplier, 누락되었거나 범위를 벗어난 rate, 비어 있는 `upstream`, 구성되지 않은 upstream을 가리키는 `upstream`, 한 upstream에서 같은 모델을 가리키는 두 행은 모두 부팅 시 검증에 실패합니다. 두 행은 문자열이 같을 때가 아니라 같은 모델을 가리킬 때 충돌합니다. `claude-sonnet-4-6`과 `claude-sonnet-4-6-20260217`은 하나의 모델입니다. 내장 모델도 아니고, **해당 행의 `upstream`에서** 어떤 `[[models]]`·`[[routes]]`·`[[route_prefixes]]` 항목으로도 요청할 수 없는 `model`은 오류 대신 경고를 기록합니다. 이 검사는 upstream 단위이며 prefix 라우트도 포함하고, prefix는 라우팅과 달리 대소문자를 구분하지 않고 비교합니다(단, 라우팅은 첫 번째 일치를 사용하므로 다른 곳으로 라우팅하는 앞선 prefix가 대소문자까지 동일한 접두사로 포함하는 prefix는 가려져 포함되지 않습니다). 행은 요청 모델과 대소문자 구분 없이 매칭되므로, 그 모델의 어떤 철자든 해당 upstream으로 라우팅되면 행은 도달 가능하며, 철자를 고르는 쪽은 클라이언트이기 때문입니다. 다른 upstream의 `upstream_model`로만 매핑된 모델은 여전히 경고 대상이고, 해당 행의 upstream에 있는 `[[route_prefixes]]` 항목이 서빙하는 모델은 경고하지 않습니다. `[models.router]` id는 그 라우터의 target과 judge가 해석되는 upstream에서 요청할 수 있고(judge 호출도 라우터 id로 가격이 매겨집니다) `noop` 라우터는 스스로 upstream을 호출하지 않습니다. 같은 항목의 `[models.subagents]` 오버레이는 그 호출도 부모 id로 가격이 매겨지므로 오버레이의 target과 judge가 해석되는 upstream을 더합니다. 그 밖의 upstream에 있는 그 id의 행은 경고합니다. `server.default_provider`를 가리키는 행은 경고하지 않습니다. 라우팅이 어떤 route나 prefix도 잡지 않은 모델을 모두 그 provider로 보내기 때문입니다.
+
+모델 id는 매칭 전에 정규화됩니다. Claude Code의 `[1m]` 컨텍스트 윈도 힌트, Bedrock 리전 접두사와 `anthropic.` 네임스페이스, Bedrock `-v<major>:<minor>` 버전 접미사, 날짜 스냅샷 접미사(`-20260217`, `@20251101`), 그리고 OpenRouter·Vercel AI Gateway 형식이 대상입니다. 후자는 `anthropic/` 네임스페이스를 제거하고 점으로 쓴 버전을 하이픈으로 바꾸므로 `anthropic/claude-opus-4.8`은 `claude-opus-4-8`로 가격이 매겨집니다. `~anthropic/claude-sonnet-latest` 같은 부동 별칭은 버전을 지정하지 않으므로 가격을 매길 수 없는 상태로 남습니다.
+
+rate는 upstream 단위로 가장 구체적인 것부터 매칭됩니다. upstream 모델 id와 일치하는 override, 다음으로 클라이언트 모델 id와 일치하는 override, 다음으로 같은 내장 모델을 다른 id(날짜 스냅샷, Bedrock id)로 가리키는 override, 다음으로 upstream 모델의 내장 정가(클라이언트 모델의 정가는 쓰지 않으므로, 내장 클라이언트 id를 Anthropic이 아닌 upstream 모델로 재매핑해도 Anthropic 요금으로 과금되지 않음), 그다음은 없음 — 가격을 매길 수 없는 요청입니다. 서버 측 웹 검색은 토큰이 아니라 요청 단위(`$0.01`)로 과금되므로 multiplier만 적용됩니다. 모든 금액은 USD **추정치**로, 보고된 토큰 수를 공개 정가에 대입해 계산하므로 실제 청구서와 센트 단위까지 일치하지는 않습니다.
 
 ### `[server.spend.enforcement]` (선택)
 
@@ -194,7 +267,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | `codex` | 어떤 route에도 `model`이 일치하지 않는 inbound request를 처리할 `[providers.<name>]` 테이블 이름. `auth = "chatgpt_oauth"`를 사용해야 함 |
 | `routes` | `[]` | 선택적인 모델별 라우팅(아래 참고) |
 
-`POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses`를 등록하며, 모두 지정한 provider의 account pool이 처리합니다. `[server.auth]`가 있으면 다른 server-side credential route처럼 유효한 client token을 요구합니다. `[server.auth]`가 없으면 operator의 Codex credential을 주입하면서도 접근 가능한 누구에게나 **open** 상태이므로 loopback 외 환경에서는 반드시 보호하세요. `/v1/messages`와 달리 request는 Anthropic Messages로 변환하거나 그 반대로 변환하지 않고 upstream과 verbatim relay합니다.
+`/backend-api/codex/responses`, `/responses`, `/v1/responses` 각각에 `POST`와 `GET`(WebSocket 업그레이드)을 등록하며, 모두 지정한 provider의 account pool이 처리합니다. `[server.auth]`가 있으면 다른 server-side credential route처럼 유효한 client token을 요구합니다. `[server.auth]`가 없으면 operator의 Codex credential을 주입하면서도 접근 가능한 누구에게나 **open** 상태이므로 loopback 외 환경에서는 반드시 보호하세요. `/v1/messages`와 달리 request는 Anthropic Messages로 변환하거나 그 반대로 변환하지 않고 upstream과 verbatim relay합니다.
 
 ### `[[server.codex_endpoint.routes]]` (선택)
 
@@ -213,9 +286,9 @@ headers = { "x-api-key" = "..." }
 
 이 테이블은 공유 계정 풀의 쿼터 상태를 정제해 집계한 클라이언트용 `GET /usage`를 등록하므로, 관리자 화면 없이도 클라이언트가 스로틀링을 예상할 수 있습니다([엔드포인트 상세](/ko/reference/endpoints/)). 테이블이 없으면 라우트도 등록되지 않습니다.
 
-현재 이 테이블에는 키가 없으며, 존재만으로 활성화됩니다. [`[server.auth]`](#serverauth-선택)가 필수입니다. 엔드포인트는 클라이언트 토큰으로 호출자를 식별하므로 `[server.auth]` 없이 `[server.usage]`를 설정하면 시작이 실패하고, 인증 없이 풀 텔레메트리를 제공하지 않습니다.
+현재 이 테이블에는 키가 없으며, 존재만으로 활성화됩니다. [`[server.auth]`](#serverauth-선택) 또는 [`[server.gateway]`](#servergateway-선택)가 필수입니다. 엔드포인트는 클라이언트 토큰이나 게이트웨이 로그인으로 호출자를 식별하므로 둘 다 없이 `[server.usage]`를 설정하면 시작이 실패하고(`UsageEndpointRequiresAuth`), 인증 없이 풀 텔레메트리를 제공하지 않습니다.
 
-`GET /usage`는 `/v1/messages`와 같은 클라이언트 토큰(구성된 헤더, `x-api-key`, `Authorization: Bearer`)으로 인증하고 창별 잔여 여유(해당 창을 보고한 비활성 아님 계정들의 `mean(1 - utilization)`, 즉 풀 전체 용량 중 아직 쓰지 않은 비율 — 소진된 계정 9개와 새 계정 1개면 `0.1` — 풀 전체 집계이지 다음 요청이 통과될지에 대한 예측은 아님), 그 계정들이 보고한 리셋 시각 중 가장 이른 값, `ok`/`degraded`/`exhausted` 상태를 반환합니다. 계정 이름, 수, priority, `disabled`, 임계값, 계정별 수치는 노출하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창이 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 양수 `usage_refresh_seconds`를 설정하면 선택적인 `wham/usage` 폴러도 imported이며 갱신 가능한 `chatgpt_oauth` 계정의 해당 창을 채웁니다. 폴링은 기본적으로 꺼져 있습니다.
+`GET /usage`는 `/v1/messages`와 같은 클라이언트 토큰(구성된 헤더, `x-api-key`, `Authorization: Bearer`)이나 `Authorization: Bearer`로 보낸 [게이트웨이 로그인](/ko/guides/gateway-login/) 액세스 토큰(`shunt gateway claude` 세션이 보내는 값)으로 인증하고 창별 잔여 여유(해당 창을 보고한 비활성 아님 계정들의 `mean(clamp(cap - utilization, 0, 1))`, 여기서 `cap`은 그 창에 대해 계정에 적용되는 `max_utilization*` 하드 캡이며 적용되는 캡이 없으면 `1.0`, 즉 캡이 계정을 제외하기 전까지 풀 전체 용량 중 아직 쓸 수 있는 비율 — 소진된 계정 9개와 캡 없는 새 계정 1개면 `0.1`, 50% 캡 아래에서 44%인 계정은 `0.06`으로 계산됨. 캡이 이미 해당 창의 요청에서 제외한 계정은 0으로 계산되며 `5h` 또는 `7d` 캡은 Fable 요청에서도 그 계정을 제외함 — 풀 전체 집계이지 다음 요청이 통과될지에 대한 예측은 아님), 그 계정들이 보고한 리셋 시각 중 가장 이른 값, `ok`/`degraded`/`exhausted`/`capped` 상태를 반환합니다. 계정 이름, 수, priority, `disabled`, 임계값, 계정별 수치는 노출하지 않습니다. 비활성 계정이 아닌 계정 중 해당 창을 보고한 계정이 하나도 없을 때만 창이 `null`입니다. Codex 응답의 `x-codex-*` 헤더는 5시간 및 공유 주간 창을 채웁니다. Codex 자체에는 Fable 범위(`7d_oi`) 신호가 없지만 혼합 프로바이더 풀에서는 다른 프로바이더가 집계 Fable 값을 제공할 수 있습니다. 양수 `usage_refresh_seconds`를 설정하면 선택적인 `wham/usage` 폴러도 imported이며 갱신 가능한 `chatgpt_oauth` 계정의 해당 창을 채웁니다. 폴링은 기본적으로 꺼져 있습니다.
 
 응답은 풀 전체 집계를 `pool`에 담고, `providers`에는 풀링되는 프로바이더별로 같은 정제된 집계를 구성된 프로바이더 이름(`[providers.<name>]`의 `<name>` 또는 `[[upstreams]]` 항목의 `name`이며, 계정 신원이 아님)을 키로 담습니다. 모델을 그 키에 대응시키는 것은 클라이언트의 몫입니다. [`GET /routes`](/ko/reference/endpoints/)는 `[[routes]]`에 명시된 모델만 다루고, `[[models]].upstream_model`, `[[route_prefixes]]`, `server.default_provider` 매핑을 노출하는 엔드포인트는 없으며, `GET /v1/models` 항목에는 프로바이더 필드가 없습니다. 혼합 풀에서 `pool`은 모든 프로바이더의 계정을 하나의 평균으로 섞어 보고하므로, 특정 프로바이더로 라우팅하는 클라이언트는 해당 프로바이더의 여유분과 상태를 `providers.<name>`에서 읽어야 합니다. 풀링되지 않는 인증 모드의 프로바이더는 생략되며, Fable 범위 신호가 없는 프로바이더의 `fable` 창은 `pool`이 값을 보고하더라도 `null`입니다. 전체 형태는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)를 참고하세요.
 
@@ -230,13 +303,22 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_5h` | 미설정 | 5시간 창의 소프트 기본값 |
 | `default_threshold_7d` | 미설정 | 공유 주간(`7d`) 창의 소프트 기본값 |
 | `default_threshold_fable` | 미설정 | fable 전용 주간(`7d_oi`) 창의 소프트 기본값 |
+| `default_max_utilization` | 미설정 | 더 구체적인 값이 없는 모든 창의 하드 캡 기본값; 이 값 이상인 계정은 선택에서 제외됨 |
+| `default_max_utilization_5h` | 미설정 | 5시간 창의 하드 캡 기본값 |
+| `default_max_utilization_7d` | 미설정 | 공유 주간(`7d`) 창의 하드 캡 기본값 |
+| `default_max_utilization_fable` | 미설정 | fable 전용 주간(`7d_oi`) 창의 하드 캡 기본값; Fable 모델 요청에만 적용됨 |
 | `burn_rate_avoidance` | `false` | 창이 리셋되기 전에 소프트 임계값을 소진할 것으로 예측되는 계정도 함께 회피 |
+| `sort_by_reset` | `false` | 번-레이트 헤드룸 대신 사용 가능한 계정을 쿼터 리셋이 가장 빠른 순(오름차순; 알 수 없는 리셋은 맨 뒤)으로 정렬. `shunt.toml`을 편집하지 않고 관리자 대시보드나 `PATCH /admin/api/pool`로 런타임에 토글 가능 — [풀 계정 제어](/ko/guides/pool-account-controls/) 참고 |
 | `usage_refresh_seconds` | 비활성(`0`/미설정) | Claude `GET /api/oauth/usage`, Codex `GET /wham/usage`, Antigravity `POST :retrieveUserQuotaSummary`의 폴링 간격(초); 60 미만의 양수 값은 60초 하한으로 올림 |
 | `state_path` | 미설정 | 풀의 계정별 쿼터 상태를 저장할 파일; 재시작 시 빈 풀 대신 마지막으로 관측된 사용률에서 워밍업. 미설정이면 영속화 비활성(기본값) |
 | `ramp_initial_concurrency` | 비활성(`0`/미설정) | 폭주 제어: 방금 트래픽을 받기 시작한 계정 아이덴티티의 초기 동시 허용치. `0` 또는 미설정이면 허용 게이팅 비활성 |
 | `reprobe_seconds` | 이 테이블이 존재하면 `900`; `0`이면 비활성 | 오래된 근접 쿼터 Codex/ChatGPT 계정을 위한 기회적 재탐침 간격(초); 60 미만의 양수 값은 60초 하한으로 올림. `0`이면 재탐침 비활성; `[server.pool]` 자체가 없으면 이 값과 무관하게 재탐침 비활성(#135 이전 동작). 비WS outbound Responses 선택과 선택형 inbound Codex HTTP 엔드포인트는 재탐침을 유지하며, WebSocket을 켠 outbound 선택은 비활성화 |
 
 각 창 `X`에 대해 유효 소프트 임계값은 계정 `threshold_X` → 계정 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold` 순으로 결정되며 `hard_threshold`가 상한입니다. 모든 임계값은 `[0.0, 1.0]` 범위의 사용률입니다. 선택에 임계값과 번레이트가 적용되는 두 계열은 Anthropic과 Codex/ChatGPT입니다. Anthropic은 `anthropic-ratelimit-unified-*` 헤더, Codex/ChatGPT는 `x-codex-*` 5시간/주간 윈도우를 사용합니다(Codex에는 Fable 전용 `7d_oi`가 없습니다). `usage_refresh_seconds`는 imported `antigravity_oauth` 계정도 Code Assist `retrieveUserQuotaSummary` RPC로 폴링합니다. Antigravity summary는 **Gemini Models**와 **Claude + GPT Models**라는 두 개의 공유 쿼터 풀을 반환하며, 계정 플랜에서 제공되는 경우 각 풀에 5시간 및 주간 윈도우가 있습니다. 이 값은 대시보드 표시 전용이며 풀 선택에는 사용되지 않습니다.
+
+하드 캡은 소프트 임계값과 별개입니다. 각 창 `X`에 대해 유효 하드 캡은 계정 `max_utilization_X` → 계정 `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → 캡 없음 순으로 결정됩니다. `hard_threshold`로 제한되지 않으며, 계정 캡은 `[server.pool]`이 없어도 동작합니다. 스토어 스캔으로 찾은 계정(`[[providers.X.accounts]]` 항목이 없는 계정)은 풀 기본값만 받습니다. 모든 캡은 `[0.0, 1.0]` 범위의 사용률이며, 그 밖의 값은 시작과 `shunt check`를 실패시킵니다. 계정을 재정렬만 하는 `threshold_*`와 `hard_threshold`와 달리, 적용되는 창에서 관측된 사용률이 캡 이상인 계정은 선택에서 제외됩니다. 5시간 캡과 공유 주간 캡은 모든 요청에 적용되고, Fable 캡은 Fable 모델 요청에만, 그리고 해당 계정의 `7d_oi` 사용률이 관측된 뒤에만 적용됩니다. 사용률이 관측되지 않은 창은 제외하지 않습니다. 제외된 계정은 사용률이 캡 아래로 내려가면 자동으로 다시 선택 대상이 됩니다. 창 리셋 또는 만료, 더 낮은 관측값, 구성 리로드 시 캡 상향이 그 경로입니다. 캡은 새 라우팅만 막으며 정밀한 예산이 아니고 디스패치된 요청을 위해 사용량을 미리 확보하지도 않으므로, 진행 중이거나 동시에 들어온 요청은 소비하는 만큼 캡을 초과할 수 있습니다. 캡 때문에 선택 가능한 계정이 풀에 남지 않으면 shunt는 게이트웨이가 만든 HTTP `429` `rate_limit_error`("all selectable accounts for provider '…' are at their max_utilization cap for this request")를 반환하며, 가장 이른 재선택 가능 시각을 알면 `retry-after`를 붙입니다. 업스트림 `429`와 마찬가지로 [`[[upstreams]]`](#upstreams-순서가-있는-페일오버) 페일오버 체인을 진행시키므로, 뒤의 업스트림(종량제일 수 있음)이 요청을 처리하고, 어느 것도 처리하지 못할 때만 클라이언트가 `429`를 받습니다. 단, 이미 Codex/ChatGPT 풀로 커밋된(HTTP `200`이 전송된) 스트리밍 요청은 뒤의 업스트림이 처리하지 못하면 HTTP `429`와 `retry-after` 헤더 없이 스트림 안의 종료 SSE `error` 이벤트를 받습니다. 인바운드 Codex 엔드포인트에서는 같은 오류가 OpenAI 오류 형태로 반환됩니다. 캡은 Claude OAuth 풀(5h, 7d, `7d_oi`)과 Codex/ChatGPT 풀(5시간 및 주간 창; Fable 키는 여기서 무효)에서 유효하고, Kimi OAuth 풀에서도 Kimi 업스트림이 사용률 헤더를 보고하면 캡이 적용됩니다. 지금까지 보고가 관측된 적이 없어 실제로는 비활성 상태이며, 관측되지 않은 창은 제외하지 않습니다. Antigravity 쿼터는 캡에 반영되지 않습니다. 관리자 대시보드는 캡이 걸린 계정을 "Capped"로, Fable 전용 캡이면 "Capped (Fable)"로 표시하고 설정된 각 캡을 계정의 사용량 막대와 풀 표에 나타내며, `GET /admin/api/pool`은 계정별로 확정된 `max_utilization_5h`, `max_utilization_7d`, `max_utilization_fable`을 보고합니다(비율이며, 해당 창에 적용되는 캡이 없으면 `null`). `GET /usage`는 사용 가능한 계정이 없고 활성화된(`disabled`가 아닌) 계정 중 일시 정지되지 않은 계정 하나 이상에 캡이 걸려 있으면 풀 상태 `capped`를 보고합니다. 예: 계정에 `max_utilization_fable = 0.5`를 두면 Opus는 계속 그 계정을 쓰는 동안 Fable은 그 계정의 Fable 주간 버킷의 약 50%까지만 사용합니다.
+
+계정 수준 키 `max_utilization`, `max_utilization_5h`, `max_utilization_7d`, `max_utilization_fable`은 각 `[[providers.X.accounts]]` 항목에 설정합니다. 자세한 내용은 영문 레퍼런스의 [accounts 표](/reference/configuration/#providersnameaccounts)를 참고하세요.
 
 양수 `usage_refresh_seconds`는 Claude의 공식 usage API, Codex/ChatGPT의 비공식 `wham/usage`, Antigravity의 비공개 `retrieveUserQuotaSummary` RPC를 대상으로 백그라운드 폴러를 시작합니다. 미설정 또는 `0`이면 비활성(기본값)입니다. imported(갱신 가능) 계정만 폴링하며, 장기 `claude setup-token`과 `token_env` 자격 증명은 건너뜁니다. Claude는 보고된 각 윈도우의 사용률·리셋 시각·사용률 관측 시각을 보정하되 status freshness는 헤더에서 유지합니다. Codex는 사용률과 관측 시각을 보정하고 리셋 메타데이터는 응답에서, status는 헤더에서 유지합니다. 미래의 저장된 리셋은 보존하고 이미 지난 리셋만 새 사용률을 쓰기 전에 지우며 wham의 `reset_at`은 실제 리셋 메타데이터로 채택하지 않습니다. Antigravity는 프로덕션 호스트 표기를 기존 daily-host resolver로 정규화하고 Gemini / Claude+GPT grouped windows를 대시보드용 quota-bucket 필드에만 기록합니다. generic 선택용 quota state에는 반영하지 않습니다. 비공개 schema는 fail-soft하게 처리하며 간격은 부팅 시 고정되고 설정 리로드는 폴러를 시작·중지·재조정하지 않습니다.
 
@@ -613,7 +695,10 @@ CLI의 stdout, Cursor는 보관하는 텍스트와 도구 호출 필드를 셉�
 기다리는 시간도 간격에 들어갑니다. shunt가 로컬에서 토큰을 세는 시간(최대 1초)은 응답을 읽는
 동안 함께 흐르므로, 간격이 지난 뒤 도착한 응답은 그대로 잘립니다. 오류 응답의 본문도 같은 간격
 안에서 읽습니다. `chatgpt_oauth` 계정 풀의 계정이 모두 실패한 뒤 전달하는 오류 본문은
-마지막 계정이 실패한 시점부터 새로 잰 간격 안에서 읽습니다. 요청을 다시 보내면 간격도 다시 잽니다. 이런 호출 도중 Antigravity 모델 카탈로그
+마지막 계정이 실패한 시점부터 새로 잰 간격 안에서 읽습니다. OpenAI Responses 대상에서는 오류
+본문 읽기가 5초가 지나면 멈춥니다. 그때까지 한 바이트도 오지 않은 본문은 간격이 더 길어도 멈춘 응답으로 보고 잘라 내고,
+도착하기 시작했지만 끝나지 않은 본문은 그 상태 코드를 알리는 메시지로 바꿔 상태 코드와 함께
+전달합니다. 요청을 다시 보내면 간격도 다시 잽니다. 이런 호출 도중 Antigravity 모델 카탈로그
 캐시가 비어 있어 가져오는 요청도 같은 한도로 읽습니다. 한도에 걸린 카탈로그는 카탈로그
 없이 shunt가 추정했을 모델 id로 대체되고, 다음 클라이언트 턴이 카탈로그를 다시 가져옵니다.
 

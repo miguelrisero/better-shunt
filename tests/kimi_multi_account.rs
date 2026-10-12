@@ -35,6 +35,7 @@ impl Match for BearerToken {
 
 struct TestGateway {
     base_url: String,
+    state: shunt::server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -84,13 +85,14 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -560,5 +562,124 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    upstream.verify().await;
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the
+/// account rotated off on a 5xx records a failure, and the account that
+/// served records a success.
+#[tokio::test]
+async fn rotation_counts_one_attempt_against_each_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "counted-a"].concat();
+    let token_b = ["fake-kimi-", "counted-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_COUNTED_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_COUNTED_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let accounts = vec![
+        account("account-a", "SHUNT_TEST_KIMI_COUNTED_A"),
+        account("account-b", "SHUNT_TEST_KIMI_COUNTED_B"),
+    ];
+    let gateway = start_gateway_with(test_config(&upstream.uri(), accounts.clone())).await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // Keyed as `resolve_pool_accounts` keys them: it stamps the Kimi family,
+    // which this provider's name alone would not infer.
+    let resolved = accounts
+        .into_iter()
+        .map(|account| AccountConfig {
+            store_family: Some(shunt::accounts::StoreFamily::Kimi),
+            ..account
+        })
+        .collect::<Vec<_>>();
+    let snapshots = gateway
+        .state
+        .accounts
+        .snapshot("anthropic", &resolved, None, None);
+    let totals = |index: usize| {
+        (
+            snapshots[index].requests_attempted,
+            snapshots[index].requests_succeeded,
+            snapshots[index].requests_failed,
+        )
+    };
+    assert_eq!(totals(0), (1, 0, 1));
+    assert_eq!(totals(1), (1, 1, 0));
+    upstream.verify().await;
+}
+
+/// Caps apply to Kimi whenever its upstream reports utilization: once the
+/// account is observed past its 5h cap, an emptied pool returns the gateway
+/// cap 429 (with `retry-after`) rather than the generic exhaustion error.
+#[tokio::test]
+async fn capped_kimi_pool_returns_the_gateway_cap_429() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["fake-kimi-", "capped-a"].concat();
+    vars.set("SHUNT_TEST_KIMI_CAPPED_A", &token);
+    let upstream = MockServer::start().await;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.9")
+                .insert_header("anthropic-ratelimit-unified-5h-reset", reset.to_string())
+                .set_body_string(r#"{"type":"message"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut capped = account("account-a", "SHUNT_TEST_KIMI_CAPPED_A");
+    capped.max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(test_config(&upstream.uri(), vec![capped])).await;
+
+    // First request is served and teaches the pool the account is at 0.9.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_utilization"),
+        "{body}"
+    );
     upstream.verify().await;
 }

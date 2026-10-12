@@ -8,7 +8,7 @@ Setup guide: [docs/setup-shunt.md](https://github.com/miguelrisero/ultraship/blo
 
 ## Baseline and maintained changes
 
-Upstream baseline: `e669227747237363390b9da40cc5238fd325d80a` (v0.51.1), merged into
+Upstream baseline: `e147f9b` (v0.55.1), merged into
 fork `main`. Changes are deliberately pinned instead of deploying upstream main automatically.
 
 - Conservative schema regex filtering: a pattern must pass the Python compatibility
@@ -19,9 +19,8 @@ fork `main`. Changes are deliberately pinned instead of deploying upstream main 
 - Progressive tool discovery and readable tool-reference history on non-Anthropic
   Messages providers ([#424](https://github.com/pleaseai/shunt/issues/424)). No arbitrary
   truncation of the callable catalog.
-- `gpt-6.1-sol` native `tool_search` support: upstream's exact model allowlist still
-  omits this slug. Older Sol slugs keep working. Effort translation already handles
-  Sol 6.1 upstream; the fork retains its regression assertion, not a separate patch.
+- `gpt-6.1-sol` native `tool_search` is now provided upstream (#723). Retain
+  downstream hint-boundary and effort regressions; no separate allowlist patch.
 - `shunt init` starter example uses `gpt-6.1-sol`.
 - `tests/compatibility_guards.rs` pins these guards, including the public Neon email pattern.
 - Fork model policy for fork-owned guidance: no Grok subagent plugin, Grok setup
@@ -44,6 +43,16 @@ Codex WebSocket error frames ([#675](https://github.com/pleaseai/shunt/issues/67
 The fork carries no patch for any of them. #661 supersedes the upstream assertion that
 only `rate_limit_exceeded` is a throttle, so that comment leaves
 `tests/responses_translate.rs` by upstream change, not by a dropped fork patch.
+
+### Retired at v0.55.1
+
+Upstream now supplies Codex client identity 0.159.3 and Sol native ToolSearch,
+Codex SSE/frame fixes, Gemini semantic/framing/tool-pairing hardening, pricing
+overrides, account-utilization caps and corrected usage headroom. The fork
+retains selective client TTL guidance, Anthropic write-TTL metrics, and Gemini
+cached-input accounting, ported through upstream's checked semantic state.
+Absent Gemini cache usage stays absent; malformed cache counts are protocol
+errors, and valid reported counts preserve total input with a clamped split.
 
 ### Retired at v0.51.1
 
@@ -70,11 +79,11 @@ boundary in `src/routing/` and `src/config/router/` uses them; no feature flag r
 The optional `prefill-router` crate from the same rev links libpython through `pyo3`.
 Release builds do not enable `prefill-router`; CI builds it through `--all-features`.
 
-## Upstream issue audit — 2026-09-30 (re-checked at v0.51.1; #489, #492 and #424 still open)
+## Upstream issue audit — 2026-09-30 (re-checked at v0.55.1; #489, #492 and #424 still open)
 
 | Issue | Applicability and policy |
 | --- | --- |
-| [#489](https://github.com/pleaseai/shunt/issues/489) | Upstream v0.51.1 still omits regex sanitization in the inbound Responses-to-Chat function schema. Retain the preventive fix; this is separate from Claude-to-Astra translation. |
+| [#489](https://github.com/pleaseai/shunt/issues/489) | Upstream v0.55.1 still omits regex sanitization in the inbound Responses-to-Chat function schema. Retain the preventive fix; this is separate from Claude-to-Astra translation. |
 | [#492](https://github.com/pleaseai/shunt/issues/492) | Add real regex-lite parsing to the existing Python approximation; pin lookaround, malformed syntax and literal-preservation regressions. This is conservative, not a guarantee of equivalence with every backend. |
 | [skuda lookaround fix](https://github.com/skuda/shunt/commit/87c138c25eb7d7647682660288e04714811ef57e) | Same failure class already fixed here. The exact public Neon email pattern is included in eager and revealed-schema regression tests. |
 | [#424](https://github.com/pleaseai/shunt/issues/424) | Existing progressive-reveal patch renders tool references as text for our non-Anthropic Messages routes. Native Anthropic remains passthrough. |
