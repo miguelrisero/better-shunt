@@ -14,6 +14,7 @@ use thiserror::Error;
 mod admin_keys;
 mod http_tuning;
 mod presets;
+mod pricing;
 mod router;
 mod secrets;
 mod session;
@@ -26,6 +27,7 @@ pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
 pub use presets::{provider_presets, ProviderPresetView};
+pub use pricing::{PricingConfig, PricingOverride};
 pub use router::{
     AdvisorGateTrigger, AdvisorRouterConfig, AutoRouterConfig, CallBounds,
     CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger, CompositeClassifierConfig,
@@ -230,9 +232,28 @@ pub struct PoolConfig {
     pub default_threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_threshold_fable: Option<f64>,
+    /// Hard utilization cap common to all windows: an account at or above it
+    /// is EXCLUDED from selection for requests the window governs (unlike the
+    /// soft `default_threshold*`, which only reorders). Resolution: account
+    /// window key -> account `max_utilization` -> `default_max_utilization_<X>`
+    /// -> `default_max_utilization` -> no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_fable: Option<f64>,
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
+    /// When true, available accounts in the pool tier sort by their earliest
+    /// known rate-limit reset timestamp (ascending — soonest-reset first) rather
+    /// than by burn-rate headroom. Accounts with no reset signal sort last
+    /// within their priority tier. Off by default.
+    #[serde(default)]
+    pub sort_by_reset: bool,
     /// Poll Claude's `/api/oauth/usage`, Codex's `/wham/usage`, and
     /// Antigravity's `retrieveUserQuotaSummary` every N seconds for refreshable
     /// accounts. Unset or `0` disables polling; positive values below 60 are
@@ -285,7 +306,12 @@ impl Default for PoolConfig {
             default_threshold_5h: None,
             default_threshold_7d: None,
             default_threshold_fable: None,
+            default_max_utilization: None,
+            default_max_utilization_5h: None,
+            default_max_utilization_7d: None,
+            default_max_utilization_fable: None,
             burn_rate_avoidance: false,
+            sort_by_reset: false,
             usage_refresh_seconds: None,
             state_path: None,
             ramp_initial_concurrency: None,
@@ -364,6 +390,9 @@ impl StatusConfig {
 /// and `GET /v1/models`.
 /// Tokens live in the environment (never in the TOML), as `name:token` pairs:
 /// `SHUNT_CLIENT_TOKENS="alice:3f9c…,bob:a41b…"`. See `docs/m4-inbound-auth.md`.
+///
+/// A deployment may instead (or additionally) accept JWTs minted by an external
+/// identity provider — see [`InboundJwtConfig`] and `docs/inbound-jwt-auth.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InboundAuthConfig {
     /// Header carrying the client token.
@@ -372,6 +401,84 @@ pub struct InboundAuthConfig {
     /// Env var holding the `name:token` pairs.
     #[serde(default = "default_tokens_env")]
     pub tokens_env: String,
+    /// `[[server.auth.jwt]]` — verify-only external JWT issuers. An array from
+    /// the start: one Google issuer with separate client ids for humans and
+    /// services is a normal configuration, and human SSO and workload identity
+    /// use different claim vocabularies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jwt: Vec<InboundJwtConfig>,
+}
+
+/// One `[[server.auth.jwt]]` entry: an external issuer whose JWTs shunt
+/// verifies. shunt issues nothing here — no login flow, no session, no signing
+/// secret — so this table holds no secret material and needs no
+/// [`crate::config::secrets::Secret`] field: an issuer, an audience, and a
+/// JWKS endpoint are all public.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InboundJwtConfig {
+    /// Exact `iss` match. The JWKS is derived from
+    /// `{issuer}/.well-known/openid-configuration` unless [`Self::jwks_url`]
+    /// overrides it.
+    pub issuer: String,
+    /// Accepted `aud` values, as a string or an array — an array so a client-id
+    /// rotation is not a flag day.
+    #[serde(default)]
+    pub audience: StringList,
+    /// Domains whose verified addresses are accepted, matched **exactly**
+    /// against the part after the final `@`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub email_domains: Vec<String>,
+    /// Individual verified addresses that are accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_emails: Vec<String>,
+    /// Accepted signing algorithms. The token header's `alg` never selects the
+    /// algorithm; this list does.
+    #[serde(default = "default_jwt_algorithms")]
+    pub algorithms: Vec<String>,
+    /// Accepted `azp` values when the claim is present. Defaults to
+    /// [`Self::audience`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorized_parties: Vec<String>,
+    /// Tolerance applied to `exp` and `nbf`.
+    #[serde(default)]
+    pub clock_skew_seconds: u64,
+    /// Reject when `exp - iat` exceeds this. shunt keeps no revocation state,
+    /// so this bounds how long a revoked identity keeps working; issue
+    /// minutes-scale tokens.
+    #[serde(default = "default_max_token_age_seconds")]
+    pub max_token_age_seconds: u64,
+    /// Explicit JWKS endpoint, for issuers that serve no discovery document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+}
+
+/// A config value that accepts either one string or a list of them.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum StringList {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Default for StringList {
+    fn default() -> Self {
+        Self::Many(Vec::new())
+    }
+}
+
+impl StringList {
+    /// Trimmed, non-empty entries.
+    fn resolve(&self) -> Vec<String> {
+        let values: &[String] = match self {
+            Self::One(value) => std::slice::from_ref(value),
+            Self::Many(values) => values,
+        };
+        values
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
 }
 
 fn default_auth_header() -> String {
@@ -382,29 +489,171 @@ fn default_tokens_env() -> String {
     "SHUNT_CLIENT_TOKENS".to_string()
 }
 
+fn default_jwt_algorithms() -> Vec<String> {
+    vec!["RS256".to_string()]
+}
+
+fn default_max_token_age_seconds() -> u64 {
+    3600
+}
+
 impl InboundAuthConfig {
-    /// Resolve the configured tokens from the environment. Fails closed: a
-    /// present `[server.auth]` with an unset/empty/malformed env var is a
-    /// startup error, never a silently-open gateway.
+    /// Resolve the configured credentials. Fails closed: a present
+    /// `[server.auth]` that ends up accepting nothing is a startup error, never
+    /// a silently-open gateway.
+    ///
+    /// `tokens_env` may resolve empty **only** when at least one
+    /// `[[server.auth.jwt]]` entry is configured — a deployment that
+    /// authenticates entirely through an IdP has no static tokens to set. With
+    /// neither, this still refuses to run.
     pub fn resolve(&self) -> Result<crate::auth::inbound::InboundAuth, ConfigError> {
         let header = axum::http::HeaderName::from_bytes(self.header.as_bytes()).map_err(|_| {
             ConfigError::InvalidAuthHeader {
                 header: self.header.clone(),
             }
         })?;
+        let jwt = self
+            .jwt
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| entry.resolve(index))
+            .collect::<Result<Vec<_>, _>>()?;
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
-        if raw.trim().is_empty() {
-            return Err(ConfigError::MissingClientTokens {
-                env: self.tokens_env.clone(),
-            });
-        }
-        let tokens = crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
-            ConfigError::InvalidClientTokens {
-                env: self.tokens_env.clone(),
-                message,
+        let tokens = if raw.trim().is_empty() {
+            if jwt.is_empty() {
+                return Err(ConfigError::MissingClientTokens {
+                    env: self.tokens_env.clone(),
+                });
             }
-        })?;
-        Ok(crate::auth::inbound::InboundAuth::new(header, tokens))
+            Vec::new()
+        } else {
+            crate::auth::inbound::parse_tokens(&raw).map_err(|message| {
+                ConfigError::InvalidClientTokens {
+                    env: self.tokens_env.clone(),
+                    message,
+                }
+            })?
+        };
+        Ok(crate::auth::inbound::InboundAuth::new(header, tokens).with_jwt(jwt))
+    }
+}
+
+impl InboundJwtConfig {
+    fn resolve(
+        &self,
+        index: usize,
+    ) -> Result<crate::auth::inbound_jwt::JwtIssuerRule, ConfigError> {
+        let invalid = |message: String| ConfigError::InvalidInboundJwt { index, message };
+
+        let issuer = self.issuer.trim();
+        if issuer.is_empty() {
+            return Err(invalid("issuer must not be empty".to_string()));
+        }
+        validate_idp_url(OidcSection::InboundJwt(index), issuer, true, "issuer")?;
+        // Kept exactly as configured: verification selects a rule by exact
+        // `iss` equality, so an IdP whose `iss` is `https://idp.example/` would
+        // never match a slash-stripped form. Only the gateway-collision check
+        // normalizes (see `Config::validate`).
+        let issuer = issuer.to_string();
+
+        let audience = self.audience.resolve();
+        if audience.is_empty() {
+            return Err(invalid("audience must not be empty".to_string()));
+        }
+
+        let allowed_domains: Vec<_> = self
+            .email_domains
+            .iter()
+            .map(|domain| domain.trim().to_ascii_lowercase())
+            .filter(|domain| !domain.is_empty())
+            .collect();
+        let allowed_emails: Vec<_> = self
+            .allowed_emails
+            .iter()
+            .map(|email| email.trim().to_ascii_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect();
+        // Every entry must carry an authorization rule beyond `audience`.
+        // Phase 1 offers only the email operators; the rule is enforced here
+        // rather than documented because for some issuers `audience` is not an
+        // authorization decision at all — a GitHub Actions workflow picks its
+        // own `aud`, so any repository could mint a token carrying it.
+        if allowed_domains.is_empty() && allowed_emails.is_empty() {
+            return Err(invalid(
+                "requires at least one email_domains or allowed_emails entry: audience alone is not an authorization rule".to_string(),
+            ));
+        }
+
+        let mut algorithms = Vec::new();
+        for raw in &self.algorithms {
+            let name = raw.trim();
+            let algorithm: jsonwebtoken::Algorithm = name
+                .parse()
+                .map_err(|_| invalid(format!("unknown algorithm {name:?}")))?;
+            // A symmetric algorithm here would let a published JWKS key be
+            // replayed as an HMAC secret, which is the classic `alg` confusion.
+            // shunt never verifies an inbound JWT with a shared secret.
+            if matches!(
+                algorithm,
+                jsonwebtoken::Algorithm::HS256
+                    | jsonwebtoken::Algorithm::HS384
+                    | jsonwebtoken::Algorithm::HS512
+            ) {
+                return Err(invalid(format!(
+                    "algorithm {name:?} is symmetric; inbound JWT entries verify against a public JWKS and accept asymmetric algorithms only"
+                )));
+            }
+            if !algorithms.contains(&algorithm) {
+                algorithms.push(algorithm);
+            }
+        }
+        if algorithms.is_empty() {
+            return Err(invalid("algorithms must not be empty".to_string()));
+        }
+
+        let authorized_parties: Vec<_> = self
+            .authorized_parties
+            .iter()
+            .map(|party| party.trim().to_string())
+            .filter(|party| !party.is_empty())
+            .collect();
+        // Resolved to a concrete list so the runtime never has to re-derive the
+        // default, and `azp` is checked against the same values in both cases.
+        let authorized_parties = if authorized_parties.is_empty() {
+            audience.clone()
+        } else {
+            authorized_parties
+        };
+
+        if self.max_token_age_seconds == 0 {
+            return Err(invalid(
+                "max_token_age_seconds must be greater than zero".to_string(),
+            ));
+        }
+
+        let jwks_url = self
+            .jwks_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(|url| {
+                crate::auth::inbound_jwt::validate_endpoint(url)
+                    .map(|url| url.to_string())
+                    .map_err(|message| invalid(format!("jwks_url {message}")))
+            })
+            .transpose()?;
+
+        Ok(crate::auth::inbound_jwt::JwtIssuerRule {
+            issuer,
+            jwks_url,
+            audience,
+            algorithms,
+            authorized_parties,
+            allowed_domains,
+            allowed_emails,
+            clock_skew_seconds: self.clock_skew_seconds,
+            max_token_age_seconds: self.max_token_age_seconds,
+        })
     }
 }
 
@@ -1095,6 +1344,10 @@ impl AdminOidcConfig {
 enum OidcSection {
     Gateway,
     Admin,
+    /// `[[server.auth.jwt]]` at this index. Not an OIDC *client* section — it
+    /// borrows only the URL validation, since a verify-only entry's issuer must
+    /// satisfy the same transport and shape rules as a sign-in issuer.
+    InboundJwt(usize),
 }
 
 impl OidcSection {
@@ -1103,6 +1356,7 @@ impl OidcSection {
         match self {
             Self::Gateway => ConfigError::InvalidGatewayOidc { message },
             Self::Admin => ConfigError::InvalidAdminOidc { message },
+            Self::InboundJwt(index) => ConfigError::InvalidInboundJwt { index, message },
         }
     }
 
@@ -1110,6 +1364,10 @@ impl OidcSection {
         match self {
             Self::Gateway => ConfigError::MissingGatewayOidcSecret { env },
             Self::Admin => ConfigError::MissingAdminOidcSecret { env },
+            Self::InboundJwt(index) => ConfigError::InvalidInboundJwt {
+                index,
+                message: format!("unexpected client secret requirement ({env})"),
+            },
         }
     }
 
@@ -1117,6 +1375,10 @@ impl OidcSection {
         match self {
             Self::Gateway => ConfigError::MissingGatewayOidcAllowlist,
             Self::Admin => ConfigError::MissingAdminOidcAllowlist,
+            Self::InboundJwt(index) => ConfigError::InvalidInboundJwt {
+                index,
+                message: "requires at least one email_domains or allowed_emails entry".to_string(),
+            },
         }
     }
 }
@@ -1342,10 +1604,11 @@ fn default_codex_endpoint_provider() -> String {
 /// `[server.usage]` — opt-in client-facing usage endpoint. When present, shunt
 /// registers `GET /usage`, which returns a **sanitized, aggregated** view of the
 /// shared account pool's quota state (per-window remaining headroom and reset)
-/// for `[server.auth]` client-token holders. Unlike the admin dashboard
+/// for `[server.auth]` client-token holders or `[server.gateway]` gateway
+/// logins. Unlike the admin dashboard
 /// (`GET /admin/api/pool`), it never exposes account identities, counts, priorities,
 /// disabled flags, or thresholds. Presence alone opts in; the table has no
-/// fields today. Requires `[server.auth]`. Absent ⇒ the route does not exist.
+/// fields today. Requires `[server.auth]` or `[server.gateway]`. Absent ⇒ the route does not exist.
 /// See `docs/m12-client-usage-endpoint.md`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UsageEndpointConfig {}
@@ -1757,6 +2020,18 @@ pub struct AccountConfig {
     pub threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_fable: Option<f64>,
+    /// Hard utilization cap for every window: the account is EXCLUDED from
+    /// selection for requests that window governs once at or above it (unlike
+    /// the soft `threshold*`, which only reorders). Overrides the pool's
+    /// `default_max_utilization*`; the per-window keys beat this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_fable: Option<f64>,
     /// Selection priority among available accounts: lower is preferred.
     /// Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default = "default_account_priority")]
@@ -1791,6 +2066,10 @@ impl Default for AccountConfig {
             threshold_5h: None,
             threshold_7d: None,
             threshold_fable: None,
+            max_utilization: None,
+            max_utilization_5h: None,
+            max_utilization_7d: None,
+            max_utilization_fable: None,
             priority: default_account_priority(),
             disabled: false,
             store_entry: false,
@@ -1994,7 +2273,7 @@ fn model_supports_tool_search(model: &str) -> bool {
     // exactly: the catalog lists no gpt-6 family, only these slugs.
     matches!(
         model,
-        "gpt-6-astra" | "gpt-6-sol" | "gpt-6.1-sol" | "gpt-6-luna"
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol"
     )
 }
 
@@ -2523,7 +2802,7 @@ pub enum ConfigError {
     DuplicateCodexRoute { model: String },
     #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
     EmptyCodexRouteField { model: String, field: &'static str },
-    #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
+    #[error("[server.usage] requires [server.auth] or [server.gateway]: the usage endpoint must identify a non-admin caller by client token or gateway login")]
     UsageEndpointRequiresAuth,
     #[error("[server.oauth_usage] on a non-loopback [server.bind] requires [server.auth] or [server.gateway]: without one, Claude subscription quota telemetry would be served to any caller on the network")]
     OauthUsageEndpointRequiresAuthOnNonLoopback,
@@ -2775,6 +3054,30 @@ pub enum ConfigError {
     LiteralAdminKey { path: String },
     #[error("[server.spend] requires [server.admin]: the spend-limit API authenticates with the admin credential")]
     SpendRequiresAdmin,
+    #[error("[server.spend.pricing].multiplier must be a finite number of at least 0.000001 and at most 1, got {multiplier}")]
+    InvalidPricingMultiplier { multiplier: f64 },
+    #[error("server.spend.pricing.overrides[{index}].{field} must be a finite USD-per-million rate of at least 0.001 and at most 18446744073, got {value}")]
+    InvalidPricingRate {
+        index: usize,
+        field: &'static str,
+        value: f64,
+    },
+    #[error(
+        "server.spend.pricing.overrides[{index}].upstream must be non-empty and non-whitespace"
+    )]
+    EmptyPricingOverrideUpstream { index: usize },
+    #[error("server.spend.pricing.overrides[{index}].upstream references unknown upstream \"{upstream}\"; available upstreams: {available}")]
+    UnknownPricingOverrideUpstream {
+        index: usize,
+        upstream: String,
+        available: String,
+    },
+    #[error("server.spend.pricing.overrides[{index}].model \"{model}\" prices the same model as an earlier row for upstream \"{upstream}\"; give each model at most one override row per upstream")]
+    DuplicatePricingOverride {
+        index: usize,
+        upstream: String,
+        model: String,
+    },
     /// The header value is deliberately not echoed — it is typically a
     /// collector API key.
     #[error(
@@ -2786,10 +3089,14 @@ pub enum ConfigError {
         name: String,
         part: &'static str,
     },
-    #[error("[server.auth] is set but {env} is unset or empty; refusing to run open")]
+    #[error("[server.auth] is set but {env} is unset or empty and no [[server.auth.jwt]] issuer is configured; refusing to run open")]
     MissingClientTokens { env: String },
     #[error("invalid client tokens in {env}: {message}")]
     InvalidClientTokens { env: String, message: String },
+    #[error("[[server.auth.jwt]] entry {index}: {message}")]
+    InvalidInboundJwt { index: usize, message: String },
+    #[error("[[server.auth.jwt]] entry {index} uses issuer {issuer}, which is also [server.gateway] public_url: the gateway's own session tokens and this issuer's tokens would be indistinguishable")]
+    InboundJwtCollidesWithGateway { index: usize, issuer: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
     InvalidSentryDsn { message: String },
     #[error("sentry.traces_sample_rate must be between 0.0 and 1.0, got {rate}")]
@@ -3691,6 +3998,219 @@ impl Config {
         Ok(())
     }
 
+    /// `[server.spend.pricing]` shape checks. Runs after `normalize_upstreams`
+    /// so `self.providers` holds the merged upstream map an override row's
+    /// `upstream` must name.
+    fn validate_pricing(&self) -> Result<(), ConfigError> {
+        let Some(pricing) = self
+            .server
+            .spend
+            .as_ref()
+            .and_then(|spend| spend.pricing.as_ref())
+        else {
+            return Ok(());
+        };
+        if !pricing.multiplier.is_finite()
+            || pricing.multiplier < crate::gateway::spend::pricing::MIN_MULTIPLIER
+            || pricing.multiplier > 1.0
+        {
+            return Err(ConfigError::InvalidPricingMultiplier {
+                multiplier: pricing.multiplier,
+            });
+        }
+        // Keyed by (upstream, canonical model): a built-in and one of its dated
+        // snapshots name the same model, so two such rows on one upstream are a
+        // duplicate even though the strings differ.
+        let mut seen: HashSet<(&str, String)> = HashSet::new();
+        for (index, row) in pricing.overrides.iter().enumerate() {
+            for (field, value) in [
+                ("input", row.input),
+                ("output", row.output),
+                ("cache_read", row.cache_read),
+                ("cache_write", row.cache_write),
+            ] {
+                if !value.is_finite()
+                    || value < crate::gateway::spend::pricing::MIN_USD_PER_MILLION
+                    || value > crate::gateway::spend::pricing::MAX_USD_PER_MILLION
+                {
+                    return Err(ConfigError::InvalidPricingRate {
+                        index,
+                        field,
+                        value,
+                    });
+                }
+            }
+            if row.upstream.trim().is_empty() {
+                return Err(ConfigError::EmptyPricingOverrideUpstream { index });
+            }
+            if !self.providers.contains_key(&row.upstream) {
+                return Err(ConfigError::UnknownPricingOverrideUpstream {
+                    index,
+                    upstream: row.upstream.clone(),
+                    available: self
+                        .providers
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
+            // The key has to normalize exactly as the resolver's stored key
+            // does — trimmed and stripped of the `[1m]` context-window hint,
+            // lowercased because the resolver compares case-insensitively.
+            // Otherwise `"alias"`, `" alias "`, and `"alias[1m]"` all pass
+            // validation as distinct rows and then shadow each other.
+            let model_key = crate::gateway::spend::pricing::canonical_builtin_id(&row.model)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    crate::routing::strip_context_window_hint(row.model.trim()).to_ascii_lowercase()
+                });
+            if !seen.insert((row.upstream.as_str(), model_key)) {
+                return Err(ConfigError::DuplicatePricingOverride {
+                    index,
+                    upstream: row.upstream.clone(),
+                    model: row.model.clone(),
+                });
+            }
+            if !self.pricing_model_is_requestable(row) {
+                tracing::warn!(
+                    upstream = %row.upstream,
+                    model = %row.model,
+                    "server.spend.pricing.overrides[{index}].model is neither a built-in model id \
+                     nor a model any [[models]], [[routes]], or [[route_prefixes]] entry can \
+                     request on that upstream; the row will never price anything"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether some request could actually be priced by `row`: its `model` is a
+    /// built-in, or it is a model id or upstream model name that `[[models]]`,
+    /// `[[routes]]`, or `[[route_prefixes]]` can produce **on that row's own
+    /// upstream**.
+    ///
+    /// The upstream scope matters because a row prices one upstream: a model
+    /// mapped only as the `codex` upstream model does not make an `anthropic`
+    /// row usable. A client model *id* is scoped the same way — routing returns
+    /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
+    /// that entry names. A `[models.router]` entry reaches the upstreams its
+    /// targets and judges resolve to through the whole chain again, so a `noop`
+    /// router, which names neither, reaches none. A `[models.subagents]`
+    /// overlay adds the upstreams its named targets and judges resolve to.
+    ///
+    /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
+    /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
+    /// single route, so every model string is requestable on that one upstream
+    /// and a row naming it is never warned about.
+    ///
+    /// Every comparison here is case-insensitive, including the prefix one,
+    /// even though routing compares case-sensitively throughout. The two are
+    /// composed: `PriceTable::resolve` matches a row against the request model
+    /// case-insensitively, so the row prices a request as long as *some*
+    /// spelling of its model routes to this upstream — and the client, not the
+    /// operator, chooses the spelling. Mirroring routing's case-sensitivity
+    /// here would warn about rows that price real traffic.
+    fn pricing_model_is_requestable(&self, row: &PricingOverride) -> bool {
+        // Match against the string routing matches against: it strips the
+        // `[1m]` hint before route lookup, and the resolver trims.
+        let model = crate::routing::strip_context_window_hint(row.model.trim());
+        // A blank model reaches nothing, including on `server.default_provider`.
+        // `PriceTable::resolve` compares against the trimmed request model, and
+        // no routed request carries an empty one, so the row prices nothing and
+        // the operator's intended rate silently falls back to the catalog.
+        // Answering `false` here warns instead of letting the default-provider
+        // arm below wave it through.
+        if model.is_empty() {
+            return false;
+        }
+        if crate::gateway::spend::pricing::canonical_builtin_id(model).is_some() {
+            return true;
+        }
+        if row.upstream == self.server.default_provider {
+            return true;
+        }
+        let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);
+        self.models.iter().any(|entry| {
+            // The id alone is not enough: `resolve_chain` returns as soon as a
+            // `[[models]]` entry claims the id, and it returns only the
+            // upstreams that entry can route to. A row on any other upstream
+            // is inert however the id is spelled.
+            let id_reaches_this_upstream = matches(&entry.id)
+                // A delegated-work overlay diverts a child's turn to one of its
+                // named targets, ahead of the entry's own router or map, and
+                // resolves that target through the chain again under the
+                // parent's id. Validation keeps every target one hop deep (no
+                // router or overlay of its own), so resolving each target here
+                // names exactly the upstreams a child turn can land on. A
+                // classifier overlay's judge call is stamped with the parent's
+                // id too, so its upstreams count as well. The parent's own
+                // turns still take the arms below.
+                && (entry.subagents.as_ref().is_some_and(|overlay| {
+                    let targets = overlay.named_targets();
+                    let judges = overlay.named_judges();
+                    targets.iter().chain(&judges).any(|(_, target)| {
+                        crate::routing::resolve_model_chain(self, target)
+                            .iter()
+                            .any(|route| route.provider == row.upstream)
+                    })
+                }) || match (&entry.router, &entry.upstream_model) {
+                    // A router re-resolves each id it calls through the chain
+                    // under its own id, one hop deep like an overlay target.
+                    (Some(router), _) => router.priced_call_ids().into_iter().any(|target| {
+                        crate::routing::resolve_model_chain(self, target)
+                            .iter()
+                            .any(|route| route.provider == row.upstream)
+                    }),
+                    // An `upstream_model` map routes to the providers it names
+                    // and nowhere else.
+                    (None, Some(upstreams)) if !upstreams.is_empty() => {
+                        upstreams.contains_key(&row.upstream)
+                    }
+                    // Without a map the entry produces no route at all and
+                    // routing falls through, so let the `[[routes]]`,
+                    // `[[route_prefixes]]`, and default-provider arms answer
+                    // instead of claiming the id here.
+                    (None, _) => false,
+                });
+            id_reaches_this_upstream
+                || entry
+                    .upstream_model
+                    .as_ref()
+                    .and_then(|map| map.get(&row.upstream))
+                    .is_some_and(|upstream_model| matches(upstream_model))
+        }) || self.routes.iter().any(|route| {
+            route.provider == row.upstream
+                && (matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches))
+        }) || self
+            .route_prefixes
+            .iter()
+            .enumerate()
+            .any(|(index, route)| {
+                // Routing takes the FIRST prefix that matches, case-sensitively, in
+                // declaration order. A prefix is therefore shadowed only when an
+                // earlier prefix routed elsewhere is a case-exact prefix of it:
+                // then every string matching it also matches the earlier one. Any
+                // other overlap (a different case, a longer earlier prefix) leaves
+                // a spelling the client can send that still reaches it.
+                let shadowed = self.route_prefixes[..index].iter().any(|earlier| {
+                    earlier.provider != route.provider && route.prefix.starts_with(&earlier.prefix)
+                });
+                // Case-insensitive on purpose, even though prefix routing itself is
+                // case-sensitive. An override row matches the request model
+                // case-insensitively, so the row is reachable if *any* spelling of
+                // it reaches this upstream — and the client picks the spelling. A
+                // row `VENDOR-x` behind the prefix `vendor-` prices every request
+                // for `vendor-x`. `get(..len)` yields `None` on a non-char-boundary
+                // index, so a multi-byte model is never sliced mid-character.
+                !shadowed
+                    && route.provider == row.upstream
+                    && model
+                        .get(..route.prefix.len())
+                        .is_some_and(|head| head.eq_ignore_ascii_case(&route.prefix))
+            })
+    }
+
     pub fn validate(mut self) -> Result<Self, ConfigError> {
         self.normalize_upstreams()?;
         // Runs after `normalize_upstreams` so it sees `self.providers` merged
@@ -3742,7 +4262,44 @@ impl Config {
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
         if let Some(auth) = &self.server.auth {
-            auth.resolve()?;
+            let resolved = auth.resolve()?;
+            // Keep the two JWT paths unambiguous. `[server.gateway]` mints its
+            // own session tokens with `iss` equal to its `public_url`, and
+            // `authenticate_bearer` checks them on the same header slot as an
+            // inbound JWT entry. An entry claiming that issuer would make which
+            // verifier owns a token depend on evaluation order. A malformed
+            // `public_url` is left to `gateway.resolve()` below, which reports
+            // it as the gateway error it is.
+            if let Some(gateway) = &self.server.gateway {
+                if let Ok(public_url) = resolve_public_origin(&gateway.public_url, |message| {
+                    ConfigError::InvalidGatewayPublicUrl { message }
+                }) {
+                    let gateway_issuer = public_url.as_str().trim_end_matches('/');
+                    // Both sides normalized: the entry's issuer is stored as
+                    // configured, `public_url` is a bare origin. Only a root
+                    // path loses its slash; `https://idp//` is a distinct path,
+                    // not the gateway's origin.
+                    if let Some((index, rule)) =
+                        resolved.jwt().iter().enumerate().find(|(_, rule)| {
+                            reqwest::Url::parse(&rule.issuer)
+                                .map(|url| {
+                                    if url.path() == "/" {
+                                        url.as_str().trim_end_matches('/').to_string()
+                                    } else {
+                                        url.as_str().to_string()
+                                    }
+                                })
+                                .unwrap_or_else(|_| rule.issuer.clone())
+                                == gateway_issuer
+                        })
+                    {
+                        return Err(ConfigError::InboundJwtCollidesWithGateway {
+                            index,
+                            issuer: rule.issuer.clone(),
+                        });
+                    }
+                }
+            }
         }
         // Fail closed at boot: [server.admin] without resolvable credentials
         // would be an unauthenticated admin surface. Reject it rather than run
@@ -3791,6 +4348,19 @@ impl Config {
                 ("default_threshold_5h", pool.default_threshold_5h),
                 ("default_threshold_7d", pool.default_threshold_7d),
                 ("default_threshold_fable", pool.default_threshold_fable),
+                ("default_max_utilization", pool.default_max_utilization),
+                (
+                    "default_max_utilization_5h",
+                    pool.default_max_utilization_5h,
+                ),
+                (
+                    "default_max_utilization_7d",
+                    pool.default_max_utilization_7d,
+                ),
+                (
+                    "default_max_utilization_fable",
+                    pool.default_max_utilization_fable,
+                ),
             ] {
                 if let Some(value) = value {
                     if !(0.0..=1.0).contains(&value) {
@@ -4235,6 +4805,10 @@ impl Config {
                     ("threshold_5h", account.threshold_5h),
                     ("threshold_7d", account.threshold_7d),
                     ("threshold_fable", account.threshold_fable),
+                    ("max_utilization", account.max_utilization),
+                    ("max_utilization_5h", account.max_utilization_5h),
+                    ("max_utilization_7d", account.max_utilization_7d),
+                    ("max_utilization_fable", account.max_utilization_fable),
                 ] {
                     if let Some(value) = value {
                         if !(0.0..=1.0).contains(&value) {
@@ -4357,11 +4931,15 @@ impl Config {
                 }
             }
         }
-        // The client-facing usage endpoint identifies its caller by client token,
-        // so it is only meaningful — and only safe to register — when inbound auth
-        // is configured. Without it, `GET /usage` would be world-readable pool
+        // The client-facing usage endpoint identifies its caller by client token
+        // (`[server.auth]`) or gateway login (`[server.gateway]`), so it is only
+        // meaningful — and only safe to register — when at least one of them is
+        // configured. Without either, `GET /usage` would be world-readable pool
         // telemetry; fail closed at boot rather than expose it.
-        if self.server.usage.is_some() && self.server.auth.is_none() {
+        if self.server.usage.is_some()
+            && self.server.auth.is_none()
+            && self.server.gateway.is_none()
+        {
             return Err(ConfigError::UsageEndpointRequiresAuth);
         }
         // `[server.oauth_usage]` serves Claude subscription quota telemetry
@@ -4518,6 +5096,14 @@ impl Config {
                 );
             }
         }
+        // The pricing table is read by the (not yet implemented) spend meter,
+        // which has no way to report a bad rate per request. Reject an
+        // unusable multiplier, rate, or upstream reference at boot instead.
+        // Last, because its reachability check resolves router and overlay
+        // targets and judges through `routing::resolve_model_chain`, which
+        // recurses without bound on a router cycle; the router and overlay
+        // checks above reject those first.
+        self.validate_pricing()?;
         self.warn_service_tier_withheld_for_flavor();
         Ok(self)
     }
@@ -5284,10 +5870,11 @@ mod tests {
         identity_collisions, AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode,
         CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, GatewayConfig,
         GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig,
-        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
-        OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind,
-        ResponsesFlavor, RetryConfig, Secret, SpendConfig, StatusConfig, StatusSource,
-        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
+        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, InboundJwtConfig,
+        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, PricingConfig,
+        PricingOverride, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig, RouteConfig,
+        RoutePrefixConfig, Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig,
+        CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -5298,6 +5885,17 @@ mod tests {
             router: None,
             stage_router: None,
             subagents: None,
+        }
+    }
+
+    fn pricing_override(upstream: &str, model: &str, input: f64) -> PricingOverride {
+        PricingOverride {
+            upstream: upstream.to_string(),
+            model: model.to_string(),
+            input,
+            output: input * 5.0,
+            cache_read: 0.5,
+            cache_write: 1.5,
         }
     }
 
@@ -6333,6 +6931,7 @@ mod tests {
                 .extract()
                 .unwrap();
         assert_eq!(bare.threshold, None);
+        assert_eq!(bare.max_utilization, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
     }
@@ -6516,6 +7115,107 @@ confidence_threshold = 0.6
             };
             assert_eq!(pool.storm_ramp_initial(), expected, "{configured:?}");
         }
+    }
+
+    #[test]
+    fn max_utilization_keys_parse_and_round_trip() {
+        let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            "default_max_utilization = 0.9\ndefault_max_utilization_5h = 0.8\n\
+             default_max_utilization_7d = 0.7\ndefault_max_utilization_fable = 0.6",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(pool.default_max_utilization, Some(0.9));
+        assert_eq!(pool.default_max_utilization_5h, Some(0.8));
+        assert_eq!(pool.default_max_utilization_7d, Some(0.7));
+        assert_eq!(pool.default_max_utilization_fable, Some(0.6));
+        let again: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            &toml::to_string(&pool).unwrap(),
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(again.default_max_utilization_fable, Some(0.6));
+
+        let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            "name = \"a\"\nmax_utilization = 0.9\nmax_utilization_5h = 0.8\n\
+             max_utilization_7d = 0.7\nmax_utilization_fable = 0.6",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(account.max_utilization, Some(0.9));
+        assert_eq!(account.max_utilization_5h, Some(0.8));
+        assert_eq!(account.max_utilization_7d, Some(0.7));
+        assert_eq!(account.max_utilization_fable, Some(0.6));
+        let again: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            &toml::to_string(&account).unwrap(),
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(again.max_utilization_5h, Some(0.8));
+
+        let serialized = toml::to_string(&PoolConfig::default()).unwrap();
+        assert!(!serialized.contains("max_utilization"), "{serialized}");
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_max_utilization() {
+        for key in [
+            "default_max_utilization",
+            "default_max_utilization_5h",
+            "default_max_utilization_7d",
+            "default_max_utilization_fable",
+        ] {
+            for bad in [1.5, -0.1, f64::NAN] {
+                let mut pool = PoolConfig::default();
+                match key {
+                    "default_max_utilization" => pool.default_max_utilization = Some(bad),
+                    "default_max_utilization_5h" => pool.default_max_utilization_5h = Some(bad),
+                    "default_max_utilization_7d" => pool.default_max_utilization_7d = Some(bad),
+                    _ => pool.default_max_utilization_fable = Some(bad),
+                }
+                let mut config = Config::default();
+                config.server.pool = Some(pool);
+                assert!(matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidPoolThreshold { key: found, .. } if found == key
+                ));
+            }
+        }
+        let mut config = Config::default();
+        config.server.pool = Some(PoolConfig {
+            default_max_utilization: Some(1.0),
+            default_max_utilization_5h: Some(0.0),
+            ..Default::default()
+        });
+        config.validate().unwrap();
+
+        for key in [
+            "max_utilization",
+            "max_utilization_5h",
+            "max_utilization_7d",
+            "max_utilization_fable",
+        ] {
+            for bad in [1.01, -0.5, f64::NAN] {
+                let mut config = claude_oauth_config();
+                let mut backup = account("backup");
+                match key {
+                    "max_utilization" => backup.max_utilization = Some(bad),
+                    "max_utilization_5h" => backup.max_utilization_5h = Some(bad),
+                    "max_utilization_7d" => backup.max_utilization_7d = Some(bad),
+                    _ => backup.max_utilization_fable = Some(bad),
+                }
+                config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+                assert!(matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidAccountThreshold { key: found, .. } if found == key
+                ));
+            }
+        }
+        let mut config = claude_oauth_config();
+        let mut backup = account("backup");
+        backup.max_utilization = Some(0.9);
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+        config.validate().unwrap();
     }
 
     #[test]
@@ -7354,6 +8054,547 @@ provider = "deepseek"
             .expect("[server.spend] with [server.admin] validates");
     }
 
+    /// `[server.spend.pricing]` feeds a meter that prices requests without a
+    /// per-request way to report a bad rate, so every shape error must be a
+    /// boot error.
+    #[test]
+    fn pricing_validation_rejects_each_unusable_value() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        fn pricing_config(pricing: PricingConfig) -> Config {
+            let mut config = Config::default();
+            config.server.admin = Some(admin_config_with_keys(
+                "SHUNT_TEST_PRICING_UNUSED",
+                vec![admin_key("terraform", ADMIN_KEY_A)],
+                Vec::new(),
+            ));
+            config.server.spend = Some(SpendConfig {
+                pricing: Some(pricing),
+                ..SpendConfig::default()
+            });
+            config
+        }
+
+        for multiplier in [0.0, -0.5, 1.5, f64::NAN, f64::INFINITY] {
+            let config = pricing_config(PricingConfig {
+                multiplier,
+                overrides: Vec::new(),
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidPricingMultiplier { .. })
+                ),
+                "multiplier {multiplier} must be rejected"
+            );
+        }
+        for multiplier in [1.0, 0.85] {
+            let config = pricing_config(PricingConfig {
+                multiplier,
+                overrides: Vec::new(),
+            });
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("multiplier {multiplier} must validate: {error}"));
+        }
+
+        // The bounds themselves are accepted; only past them is an error.
+        for rate in [
+            crate::gateway::spend::pricing::MIN_USD_PER_MILLION,
+            crate::gateway::spend::pricing::MAX_USD_PER_MILLION,
+        ] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![PricingOverride {
+                    input: rate,
+                    output: rate,
+                    cache_read: rate,
+                    cache_write: rate,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                }],
+            });
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("rate {rate} must validate: {error}"));
+        }
+
+        // Every rate is required and must be positive. TOML omission is caught
+        // by serde, so the remaining cases are zero and negative.
+        for (field, row) in [
+            ("input", pricing_override("anthropic", "claude-opus-5", 0.0)),
+            (
+                "output",
+                PricingOverride {
+                    output: -1.0,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                },
+            ),
+            (
+                "cache_read",
+                PricingOverride {
+                    cache_read: 0.0,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                },
+            ),
+            (
+                "cache_write",
+                PricingOverride {
+                    cache_write: f64::NAN,
+                    ..pricing_override("anthropic", "claude-opus-5", 1.0)
+                },
+            ),
+            // Above the ceiling the femto-USD conversion saturates, so the row
+            // would price at `u64::MAX` rather than at what it states.
+            (
+                "input",
+                pricing_override(
+                    "anthropic",
+                    "claude-opus-5",
+                    crate::gateway::spend::pricing::MAX_USD_PER_MILLION + 1.0,
+                ),
+            ),
+        ] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![row],
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidPricingRate { field: rejected, .. }) if rejected == field
+                ),
+                "{field} must be rejected"
+            );
+        }
+
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![pricing_override("   ", "claude-opus-5", 1.0)],
+        });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::EmptyPricingOverrideUpstream { index: 0 })
+        ));
+
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![pricing_override("bedrock-eu", "claude-opus-5", 1.0)],
+        });
+        let error = config
+            .validate()
+            .expect_err("an override naming no configured upstream must fail");
+        let rendered = error.to_string();
+        assert!(
+            matches!(error, ConfigError::UnknownPricingOverrideUpstream { .. }),
+            "{rendered}"
+        );
+        // The message has to say which names would have worked.
+        assert!(rendered.contains("anthropic"), "{rendered}");
+        assert!(rendered.contains("codex"), "{rendered}");
+
+        // Same upstream, same model by two ids: the second row would silently
+        // shadow or be shadowed by the first depending on lookup order.
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![
+                pricing_override("anthropic", "claude-sonnet-4-6", 1.0),
+                pricing_override("anthropic", "claude-sonnet-4-6-20260217", 2.0),
+            ],
+        });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::DuplicatePricingOverride { index: 1, .. })
+        ));
+
+        // The same model on two different upstreams is not a duplicate.
+        let config = pricing_config(PricingConfig {
+            multiplier: 1.0,
+            overrides: vec![
+                pricing_override("anthropic", "claude-sonnet-4-6", 1.0),
+                pricing_override("codex", "claude-sonnet-4-6-20260217", 2.0),
+            ],
+        });
+        config.validate().expect("one row per upstream validates");
+
+        // The resolver stores each row's model trimmed and stripped of the
+        // `[1m]` hint, and compares case-insensitively, so spellings that
+        // differ only in those are one row at runtime: without the same
+        // normalization here they both validate and then shadow each other.
+        for second in [" alias ", "alias[1m]", " ALIAS[1M] "] {
+            let config = pricing_config(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![
+                    pricing_override("anthropic", "alias", 1.0),
+                    pricing_override("anthropic", second, 2.0),
+                ],
+            });
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::DuplicatePricingOverride { index: 1, .. })
+                ),
+                "{second:?} must collide with \"alias\""
+            );
+        }
+    }
+
+    #[test]
+    fn pricing_section_round_trips_through_config_load_and_validation() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config: Config =
+            figment::Figment::from(figment::providers::Serialized::defaults(Config::default()))
+                .merge(figment::providers::Toml::string(
+                    r#"
+[server.spend]
+
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "anthropic"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+"#,
+                ))
+                .extract()
+                .expect("the pricing section parses");
+
+        let tokens_env = format!("SHUNT_TEST_PRICING_ROUNDTRIP_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        config.server.admin = Some(admin_config_with_keys(
+            &tokens_env,
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        let config = config.validate().expect("the pricing section validates");
+
+        let pricing = config
+            .server
+            .spend
+            .as_ref()
+            .and_then(|spend| spend.pricing.as_ref())
+            .expect("[server.spend.pricing] survives the round trip");
+        assert_eq!(pricing.multiplier, 0.85);
+        assert_eq!(pricing.overrides.len(), 1);
+        assert_eq!(pricing.overrides[0].upstream, "anthropic");
+        assert_eq!(pricing.overrides[0].cache_write, 4.125);
+    }
+
+    /// The unusable-row warning must fire on an alias no request can carry, and
+    /// stay quiet for a built-in, a model some `[[models]]`/`[[routes]]`/
+    /// `[[route_prefixes]]` entry can actually produce **on that row's own
+    /// upstream**, or any model at all on `server.default_provider` — routing
+    /// falls through to that provider for everything it did not otherwise
+    /// claim. A `[[models]]` id is scoped like everything else: routing returns
+    /// it only on the upstreams its own entry names.
+    #[test]
+    fn pricing_override_model_is_requestable_only_via_builtins_models_and_routes() {
+        // `default_provider` is `anthropic`, so the tables here belong to
+        // `codex` and the negative cases use a third upstream that routing
+        // never reaches.
+        let config = Config {
+            models: vec![
+                model_config("team-sonnet", Some(model_upstream("codex", "gpt-5.2"))),
+                // A stage router resolves its tier target through the whole
+                // chain again, so its id reaches what its targets reach: both
+                // tiers here are unrouted and land on the default provider.
+                router_model("router-model", "capable-tier", "efficient-tier"),
+                // Both tiers resolve through the `eu-target` route, so this
+                // router reaches `bedrock-eu` and nothing else.
+                router_model("eu-router-model", "eu-target", "eu-target"),
+                // The tiers stay on the default provider, but the judge call
+                // is stamped with the router's id and resolves to `bedrock-eu`.
+                {
+                    let mut model =
+                        router_model("judged-router-model", "capable-tier", "efficient-tier");
+                    stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                        target: "eu-target".to_string(),
+                        base_threshold: 0.5,
+                        classify_trigger: Default::default(),
+                    });
+                    model
+                },
+                // A random split never serves a zero-weight arm, so the
+                // parked `eu-target` arm does not reach `bedrock-eu`.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: vec!["unrouted-target".to_string(), "eu-target".to_string()],
+                        weights: Some(vec![1.0, 0.0]),
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    ..model_config("split-model", None)
+                },
+                // Its mirror: the live arm is the one that reaches `bedrock-eu`.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: vec!["unrouted-target".to_string(), "eu-target".to_string()],
+                        weights: Some(vec![0.0, 1.0]),
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    ..model_config("live-split-model", None)
+                },
+                // A `noop` router answers without any upstream call.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Noop {}),
+                    ..model_config("noop-model", None)
+                },
+                // A delegated-work overlay re-resolves its target through the
+                // chain, ahead of the entry's own (absent) router or map. Its
+                // default target is unrouted and lands on the default
+                // provider; only its `by_type` target's exact route reaches
+                // `bedrock-eu`, so every named target has to be checked.
+                ModelConfig {
+                    subagents: Some(super::SubagentsConfig::Passthrough(
+                        super::PassthroughSubagentsConfig {
+                            target: "unrouted-target".to_string(),
+                            by_type: BTreeMap::from([(
+                                "Explore".to_string(),
+                                "eu-target".to_string(),
+                            )]),
+                        },
+                    )),
+                    ..model_config("overlay-model", None)
+                },
+                // A classifier overlay serves from its groups, all unrouted
+                // here, but its `judge` group's call is stamped with the
+                // parent's id and resolves to `bedrock-eu`.
+                ModelConfig {
+                    subagents: Some(
+                        toml::from_str(
+                            r#"
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["eu-target"], efficient = ["unrouted-target"], any = ["unrouted-target"] }
+default_target = "efficient"
+prompt = "Select a target."
+response_schema = '{"type": "object"}'
+policy = { type = "target_selector", selector = "/target" }
+"#,
+                        )
+                        .expect("the classifier overlay parses"),
+                    ),
+                    ..model_config("judged-overlay-model", None)
+                },
+            ],
+            routes: vec![
+                RouteConfig {
+                    model: "legacy-alias".to_string(),
+                    provider: "codex".to_string(),
+                    upstream_model: Some("vendor-sonnet".to_string()),
+                    effort: None,
+                    service_tier: None,
+                },
+                RouteConfig {
+                    model: "eu-target".to_string(),
+                    provider: "bedrock-eu".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+                // Exact routes are checked before the `vendor-` prefix, but
+                // they never exhaust the spellings that reach it: the client
+                // can change the case (`vendor-Special`) or add trailing
+                // whitespace, which routing keeps and the override match trims.
+                RouteConfig {
+                    model: "vendor-123".to_string(),
+                    provider: "bedrock-us".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+                RouteConfig {
+                    model: "vendor-special".to_string(),
+                    provider: "bedrock-us".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+            ],
+            route_prefixes: vec![
+                RoutePrefixConfig {
+                    prefix: "vendor-".to_string(),
+                    provider: "codex".to_string(),
+                },
+                // A non-ASCII prefix: the reachability check must not index
+                // into the model string by byte offset.
+                RoutePrefixConfig {
+                    prefix: "é".to_string(),
+                    provider: "codex".to_string(),
+                },
+                // `shadow-` routes elsewhere ahead of `shadow-special-`, so no
+                // spelling that matches the latter case-exactly reaches `codex`.
+                RoutePrefixConfig {
+                    prefix: "shadow-".to_string(),
+                    provider: "bedrock-us".to_string(),
+                },
+                RoutePrefixConfig {
+                    prefix: "shadow-special-".to_string(),
+                    provider: "codex".to_string(),
+                },
+                // A different case is not shadowed: the client can send
+                // `Open-special-x`, which `open-` does not match.
+                RoutePrefixConfig {
+                    prefix: "open-".to_string(),
+                    provider: "bedrock-us".to_string(),
+                },
+                RoutePrefixConfig {
+                    prefix: "Open-special-".to_string(),
+                    provider: "codex".to_string(),
+                },
+            ],
+            ..Config::default()
+        };
+        assert_eq!(config.server.default_provider, "anthropic");
+
+        let requestable = |config: &Config, upstream: &str, model: &str| {
+            config.pricing_model_is_requestable(&pricing_override(upstream, model, 1.0))
+        };
+
+        for (upstream, model) in [
+            ("bedrock-eu", "claude-sonnet-4-6"),
+            ("bedrock-eu", "us.anthropic.claude-sonnet-4-6-20260217-v1:0"),
+            // The `[[models]]` upstream_model map entry is keyed by upstream —
+            // both the id and the mapped upstream model resolve on `codex`.
+            ("codex", "team-sonnet"),
+            ("codex", "GPT-5.2"),
+            // A router reaches the upstreams its targets resolve to...
+            ("bedrock-eu", "eu-router-model"),
+            // ...and those its judge resolves to, since the judge call is
+            // priced under the router's id too.
+            ("bedrock-eu", "judged-router-model"),
+            // An overlay's judge counts for the same reason.
+            ("bedrock-eu", "judged-overlay-model"),
+            // A random split reaches what its positive-weight arms reach.
+            ("bedrock-eu", "live-split-model"),
+            ("bedrock-eu", "overlay-model"),
+            ("codex", "legacy-alias"),
+            ("codex", "vendor-sonnet"),
+            // A prefix route on this row's upstream serves the model, at the
+            // prefix's own case.
+            ("codex", "vendor-anything"),
+            // ...and at any other case too. Prefix *routing* is case-sensitive,
+            // so `VENDOR-anything` itself falls through to the default
+            // provider — but the override row matches case-insensitively, so
+            // this row prices every `vendor-anything` request that the prefix
+            // does route to `codex`.
+            ("codex", "VENDOR-anything"),
+            ("codex", "évariste"),
+            ("codex", "open-special-x"),
+            ("codex", "vendor-special"),
+            // No letters to re-case, but `vendor-123 ` with trailing whitespace
+            // misses the exact route, reaches the prefix, and is priced by
+            // this row once the override match trims it.
+            ("codex", "vendor-123"),
+            // Everything routing did not claim goes to the default provider.
+            ("anthropic", "my-sonnet-alias"),
+        ] {
+            assert!(
+                requestable(&config, upstream, model),
+                "{model} is requestable on {upstream}"
+            );
+        }
+        for (upstream, model) in [
+            ("bedrock-eu", "my-sonnet-alias"),
+            ("bedrock-eu", "gpt-5.3"),
+            // `resolve_chain` returns as soon as a `[[models]]` entry claims the
+            // id, and only for the upstreams that entry's `upstream_model` map
+            // names — so a row for it on any other upstream prices nothing.
+            ("bedrock-eu", "team-sonnet"),
+            // Mapped only as the `codex` upstream model: a row on another
+            // upstream naming it prices nothing.
+            ("bedrock-eu", "gpt-5.2"),
+            // Route and prefix both belong to `codex`.
+            ("bedrock-eu", "legacy-alias"),
+            ("bedrock-eu", "vendor-sonnet"),
+            ("bedrock-eu", "vendor-anything"),
+            // A model whose first char shares no byte-prefix boundary with the
+            // configured `é` prefix: the check must answer, not panic.
+            ("codex", "aé"),
+            // An earlier prefix routed elsewhere is a case-exact prefix of
+            // `shadow-special-`, so routing never picks the later one.
+            ("codex", "shadow-special-x"),
+            // The overlay's only target resolves to `bedrock-eu`, and the
+            // parent's own turn falls through to the default provider.
+            ("codex", "overlay-model"),
+            // No target or judge of these routers resolves to the row's
+            // upstream, so the row prices nothing.
+            ("bedrock-eu", "router-model"),
+            ("codex", "eu-router-model"),
+            ("codex", "judged-router-model"),
+            ("codex", "judged-overlay-model"),
+            // Only a zero-weight arm resolves to `bedrock-eu`.
+            ("bedrock-eu", "split-model"),
+            // A `noop` router calls no upstream, so nothing ever prices it.
+            ("bedrock-eu", "noop-model"),
+            ("codex", "noop-model"),
+            // A blank model reaches nothing, not even on the default provider.
+            ("anthropic", "   "),
+            ("anthropic", ""),
+        ] {
+            assert!(
+                !requestable(&config, upstream, model),
+                "{model} is not requestable on {upstream}"
+            );
+        }
+
+        // With no tables at all every model still routes to the default
+        // provider, and only there.
+        let passthrough = Config::default();
+        assert!(requestable(&passthrough, "anthropic", "my-sonnet-alias"));
+        assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
+    }
+
+    /// Pricing reachability resolves router and overlay targets and judges
+    /// through `routing::resolve_model_chain`, which recurses without bound on
+    /// a router that targets itself. The one-hop check has to reject that config
+    /// first, or validating it overflows the stack instead of returning an
+    /// error.
+    #[test]
+    fn pricing_reachability_runs_after_the_router_one_hop_check() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config = Config::default();
+        config.providers.insert(
+            "eu".to_string(),
+            ProviderConfig::anthropic("https://eu.example.invalid"),
+        );
+        config.server.admin = Some(admin_config_with_keys(
+            "SHUNT_TEST_PRICING_UNUSED",
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        config.server.spend = Some(SpendConfig {
+            pricing: Some(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![pricing_override("eu", "parent", 1.0)],
+            }),
+            ..SpendConfig::default()
+        });
+        config.models = vec![
+            router_model("loop", "loop", "loop"),
+            ModelConfig {
+                subagents: Some(super::SubagentsConfig::Passthrough(
+                    super::PassthroughSubagentsConfig {
+                        target: "loop".to_string(),
+                        by_type: BTreeMap::new(),
+                    },
+                )),
+                ..model_config("parent", None)
+            },
+        ];
+        assert!(config.validate().is_err());
+    }
+
     /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only
     /// env var *names* in it. The admin key arrays hold resolved key material,
     /// so assert the redaction directly: without `Secret`, a `{:?}` of the
@@ -7940,10 +9181,12 @@ provider = "deepseek"
 
     #[test]
     fn usage_endpoint_requires_inbound_auth() {
-        // Opting into `[server.usage]` without `[server.auth]` is rejected at
-        // boot: the endpoint must identify a non-admin caller by client token.
+        // Opting into `[server.usage]` with neither `[server.auth]` nor
+        // `[server.gateway]` is rejected at boot: the endpoint must identify a
+        // non-admin caller by client token or gateway login.
         let mut config = Config::default();
         config.server.usage = Some(UsageEndpointConfig::default());
+        assert!(config.server.auth.is_none() && config.server.gateway.is_none());
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::UsageEndpointRequiresAuth
@@ -7960,11 +9203,45 @@ provider = "deepseek"
         let mut config = Config::default();
         config.server.usage = Some(UsageEndpointConfig::default());
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: default_auth_header(),
             tokens_env: env.clone(),
         });
         let result = config.validate();
         std::env::remove_var(&env);
+        result.unwrap();
+    }
+
+    #[test]
+    fn usage_endpoint_accepts_when_only_gateway_login_is_configured() {
+        // `[server.gateway]` alone identifies the caller by gateway login, so
+        // the pairing validates without `[server.auth]`. `validate()` resolves
+        // the gateway too, so give it a signing secret and an approval user.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let suffix = format!("{}_usage", std::process::id());
+        let secret_env = format!("SHUNT_USAGE_VALIDATE_GW_SECRET_{suffix}");
+        let users_env = format!("SHUNT_USAGE_VALIDATE_GW_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+        let mut config = Config::default();
+        config.server.usage = Some(UsageEndpointConfig::default());
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: Some(secret_env.clone()),
+            users_env: users_env.clone(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: None,
+        });
+        let result = config.validate();
+        std::env::remove_var(&secret_env);
+        std::env::remove_var(&users_env);
         result.unwrap();
     }
 
@@ -8053,6 +9330,7 @@ provider = "deepseek"
         let env = format!("SHUNT_SELF_POLL_WILDCARD_{}", std::process::id());
         std::env::set_var(&env, "tester:tok-secret");
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -8078,6 +9356,7 @@ provider = "deepseek"
         let env = format!("SHUNT_SELF_POLL_XFAMILY_{}", std::process::id());
         std::env::set_var(&env, "tester:tok-secret");
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -8100,6 +9379,7 @@ provider = "deepseek"
         let env = format!("SHUNT_SELF_POLL_DUALSTACK_{}", std::process::id());
         std::env::set_var(&env, "tester:tok-secret");
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -10929,6 +12209,9 @@ target = "judge-alias"
         assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
         assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
         assert!(config.native_tool_search("codex", "gpt-6-luna"));
+        // Codex catalog slug `gpt-6.1-sol` (rust-v0.159.3, same flag).
+        assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
+        assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
         for model in [
             "openai/gpt-6-astra",
             "gpt-6-astra-preview",
@@ -10938,6 +12221,8 @@ target = "judge-alias"
             "gpt-6.1-sol-preview",
             "gpt-6.10-sol",
             "gpt-6-luna[1m]",
+            "gpt-6.1-sol-preview",
+            "gpt-6.1-sol[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }
@@ -12458,5 +13743,299 @@ routes:
             .routes
             .iter()
             .any(|route| route.model == "kimi-k2.7-code" && route.provider == "kimi"));
+    }
+
+    /// A `[server.gateway]` whose only interesting field is `public_url`. Its
+    /// signing secret is deliberately unset: these tests assert on the
+    /// inbound-JWT collision check, which runs before the gateway resolves.
+    fn gateway_config() -> GatewayConfig {
+        GatewayConfig {
+            public_url: "https://gw.example".to_string(),
+            jwt_secret_env: Some(format!("SHUNT_TEST_UNSET_GW_SECRET_{}", std::process::id())),
+            users_env: format!("SHUNT_TEST_UNSET_GW_USERS_{}", std::process::id()),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: None,
+        }
+    }
+
+    /// A `[[server.auth.jwt]]` entry that resolves cleanly, for tests that then
+    /// break exactly one field.
+    fn jwt_entry() -> InboundJwtConfig {
+        InboundJwtConfig {
+            issuer: "https://issuer.example".to_string(),
+            audience: super::StringList::One("shunt-clients".to_string()),
+            email_domains: vec!["example.com".to_string()],
+            allowed_emails: Vec::new(),
+            algorithms: vec!["RS256".to_string()],
+            authorized_parties: Vec::new(),
+            clock_skew_seconds: 0,
+            max_token_age_seconds: 3600,
+            jwks_url: None,
+        }
+    }
+
+    fn auth_with_jwt(entries: Vec<InboundJwtConfig>, tokens_env: &str) -> InboundAuthConfig {
+        InboundAuthConfig {
+            header: default_auth_header(),
+            tokens_env: tokens_env.to_string(),
+            jwt: entries,
+        }
+    }
+
+    /// An env var name guaranteed unset, so `tokens_env` resolves empty.
+    fn unset_tokens_env(tag: &str) -> String {
+        let env = format!("SHUNT_TEST_NO_TOKENS_{tag}_{}", std::process::id());
+        std::env::remove_var(&env);
+        env
+    }
+
+    #[test]
+    fn inbound_auth_boots_with_a_jwt_issuer_and_no_static_tokens() {
+        // The deployment shape the feature exists for: identity comes entirely
+        // from the IdP, so there is no `name:token` list to set.
+        let env = unset_tokens_env("JWT_ONLY");
+        let auth = auth_with_jwt(vec![jwt_entry()], &env);
+
+        let resolved = auth.resolve().expect("a JWT issuer is credential enough");
+        assert_eq!(resolved.jwt().len(), 1);
+        assert_eq!(resolved.jwt()[0].issuer, "https://issuer.example");
+        // Nothing silently became an accepted static token.
+        assert_eq!(resolved.authenticate_value(b""), None);
+    }
+
+    #[test]
+    fn inbound_auth_with_neither_tokens_nor_jwt_still_fails_closed() {
+        let env = unset_tokens_env("NEITHER");
+
+        assert!(matches!(
+            auth_with_jwt(Vec::new(), &env).resolve().unwrap_err(),
+            ConfigError::MissingClientTokens { .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_requires_an_authorization_rule_beyond_audience() {
+        // `audience` is not an authorization decision for every issuer — a
+        // GitHub Actions workflow picks its own `aud` — so an entry carrying
+        // only an audience must not resolve.
+        let env = unset_tokens_env("NO_RULE");
+        let mut entry = jwt_entry();
+        entry.email_domains = Vec::new();
+        entry.allowed_emails = Vec::new();
+
+        let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                if message.contains("email_domains")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_requires_an_audience() {
+        let env = unset_tokens_env("NO_AUD");
+        let mut entry = jwt_entry();
+        entry.audience = super::StringList::Many(Vec::new());
+
+        assert!(matches!(
+            auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_a_symmetric_algorithm() {
+        // The config-time half of `alg` confusion: a shared secret must never
+        // reach the verifier, because a published JWKS key would then be
+        // usable as one.
+        let env = unset_tokens_env("SYMMETRIC");
+        let mut entry = jwt_entry();
+        entry.algorithms = vec!["HS256".to_string()];
+
+        let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                if message.contains("symmetric")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_unknown_algorithm_and_an_empty_list() {
+        let env = unset_tokens_env("ALGS");
+        for algorithms in [vec!["RS255".to_string()], Vec::new()] {
+            let mut entry = jwt_entry();
+            entry.algorithms = algorithms.clone();
+            assert!(
+                matches!(
+                    auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                    ConfigError::InvalidInboundJwt { index: 0, .. }
+                ),
+                "{algorithms:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_unsafe_issuer_or_jwks_url() {
+        let env = unset_tokens_env("URLS");
+        let mut plaintext_issuer = jwt_entry();
+        plaintext_issuer.issuer = "http://issuer.example".to_string();
+        let mut plaintext_jwks = jwt_entry();
+        plaintext_jwks.jwks_url = Some("http://issuer.example/jwks".to_string());
+        let mut empty_issuer = jwt_entry();
+        empty_issuer.issuer = "  ".to_string();
+
+        for entry in [plaintext_issuer, plaintext_jwks, empty_issuer] {
+            assert!(matches!(
+                auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                ConfigError::InvalidInboundJwt { index: 0, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_reports_the_offending_entry_index() {
+        let env = unset_tokens_env("INDEX");
+        let mut broken = jwt_entry();
+        broken.issuer = "https://other.example".to_string();
+        broken.email_domains = Vec::new();
+
+        assert!(matches!(
+            auth_with_jwt(vec![jwt_entry(), broken], &env)
+                .resolve()
+                .unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_audience_accepts_a_string_or_an_array() {
+        let env = unset_tokens_env("AUD_FORMS");
+        let mut many = jwt_entry();
+        many.audience =
+            super::StringList::Many(vec![" rotated-id ".to_string(), String::new(), "id".into()]);
+
+        let one = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        let many = auth_with_jwt(vec![many], &env).resolve().unwrap();
+
+        assert_eq!(one.jwt()[0].audience, vec!["shunt-clients".to_string()]);
+        // Trimmed, and the blank entry dropped rather than becoming an
+        // accepted empty audience.
+        assert_eq!(
+            many.jwt()[0].audience,
+            vec!["rotated-id".to_string(), "id".to_string()]
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_authorized_parties_default_to_the_audience() {
+        let env = unset_tokens_env("AZP");
+        let mut explicit = jwt_entry();
+        explicit.authorized_parties = vec!["dedicated-azp".to_string()];
+
+        let defaulted = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        let explicit = auth_with_jwt(vec![explicit], &env).resolve().unwrap();
+
+        assert_eq!(
+            defaulted.jwt()[0].authorized_parties,
+            vec!["shunt-clients".to_string()]
+        );
+        assert_eq!(
+            explicit.jwt()[0].authorized_parties,
+            vec!["dedicated-azp".to_string()]
+        );
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_may_not_be_the_gateway_public_url() {
+        // Both verifiers read `Authorization: Bearer`, so a shared issuer would
+        // make ownership of a token depend on evaluation order.
+        let env = unset_tokens_env("GATEWAY_COLLISION");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example".to_string();
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_keeps_its_trailing_slash_but_still_collides_with_the_gateway() {
+        // Selection is by exact `iss`, so the rule keeps the configured form;
+        // the collision check normalizes both sides.
+        let env = unset_tokens_env("ISSUER_SLASH");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example/".to_string();
+        let resolved = auth_with_jwt(vec![entry.clone()], &env).resolve().unwrap();
+        assert_eq!(resolved.jwt()[0].issuer, "https://gw.example/");
+
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_with_a_double_slash_path_does_not_collide_with_the_gateway() {
+        // Only a root path is normalized: `https://gw.example//` is its own
+        // issuer, not the gateway's bare origin.
+        let env = unset_tokens_env("ISSUER_DOUBLE_SLASH");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example//".to_string();
+        // The entry itself is valid, so the assertion below reaches the
+        // collision check rather than an earlier rejection of the issuer.
+        let resolved = auth_with_jwt(vec![entry.clone()], &env).resolve().unwrap();
+        assert_eq!(resolved.jwt()[0].issuer, "https://gw.example//");
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(!matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_next_to_a_different_gateway_url_validates() {
+        // The non-vacuity control for the collision test above: the same
+        // config with a distinct issuer must clear the collision check (it
+        // then fails on the gateway's own unset signing secret, which is a
+        // different error).
+        let env = unset_tokens_env("GATEWAY_NO_COLLISION");
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![jwt_entry()], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(!matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { .. }
+        ));
     }
 }

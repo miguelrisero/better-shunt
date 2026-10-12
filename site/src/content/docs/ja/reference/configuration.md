@@ -48,6 +48,42 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 `tokens_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。shunt がトークンを読み取る環境変数名を指す点は変わりません。
 
+### `[[server.auth.jwt]]`（オプション）
+
+インバウンド認証情報の 2 つ目の種類を追加するテーブル配列です。外部 identity provider が発行した JWT を shunt は**検証するだけで、発行は一切しません** — ログインフローもセッションストアも署名 secret もありません。クライアントの設定は静的トークンと同じ（base URL と bearer）なので、`[server.gateway]` ログインと違って Claude Code を gateway provider モードに入れず、そのモードで無効化されるクライアント機能も失いません。[動作仕様](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)を参照してください。
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer を設定したら任意
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt 専用の client id>"]
+email_domains = ["example.com"]
+```
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `issuer` | 必須 | `iss` の完全一致。HTTPS 必須（`localhost` と `127.0.0.1` のみ HTTP 可）、パスは可 |
+| `audience` | 必須 | 受け入れる `aud` 値。文字列または配列 |
+| `email_domains` | `[]` | 大文字小文字を区別しないドメイン。最後の `@` の後ろの部分と**完全一致**で、サフィックス一致ではない |
+| `allowed_emails` | `[]` | 大文字小文字を区別しない完全なメールアドレス |
+| `algorithms` | `["RS256"]` | 受け入れる署名アルゴリズム。非対称のみ |
+| `authorized_parties` | `audience` | `azp` クレームが存在する場合に受け入れる値 |
+| `clock_skew_seconds` | `0` | `exp` と `nbf` に適用する許容誤差 |
+| `max_token_age_seconds` | `3600` | `exp - iat` がこれを超えたら拒否 |
+| `jwks_url` | discovery | discovery ドキュメントを提供しない issuer 向けの明示的な JWKS エンドポイント |
+
+各エントリには `issuer`、`audience`、そして `email_domains` か `allowed_emails` の値が最低 1 つ必要です。`audience` だけでは認可ルールになりません — issuer によっては呼び出し側が自分で audience を選べるからです。`algorithms` に対称アルゴリズムや未知の値がある場合、また `issuer` が `[server.gateway]` の `public_url` と同じ場合も、起動は fail closed します。両方の検証器が同じ bearer スロットを読むため、issuer が重なるとトークンの所有権が評価順に左右されます。
+
+エントリが 1 つでもあれば `tokens_env` は空でも構いません — 認証をすべて IdP に任せるデプロイには設定すべき静的トークンがありません。トークンリストもエントリもない場合、`[server.auth]` は従来どおり起動に失敗します。
+
+JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定された `header` でも `x-api-key` でもありません。Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true`、メール許可リストを確認します。検証済みのメールがログと使用量の帰属における呼び出し元 identity になり、256 バイトを超えるアドレスは切り詰めずに拒否します。ゲートされるルートは `[server.auth]` がすでに保護しているルートです: 認証情報を注入する `/v1/messages` と `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`（loopback 以外のみ）、そしてインバウンド Codex エンドポイント（HTTP、WebSocket、analytics）。
+
+key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げません。キャッシュした key set を信頼するのは最大 5 分で、その後は次のリクエストが再取得を試みます（60 秒の再取得下限が適用されます）。再取得に成功すると key set を丸ごと置き換えるため、issuer が取り下げた鍵は約 5 分以内に検証に使われなくなります。再取得に失敗した場合は、IdP の障害が全面停止に広がらないよう期限切れの key set を使い続け、discovery 自体が失敗したときは最後に発見した `jwks_uri` を代わりに試します。config reload は、エントリの `issuer` と `jwks_url` がどちらも変わらない場合に限りキャッシュ済みの鍵を保持します。未知の `kid` は key set あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、検証できたエントリがなく、トークンの issuer に一致するエントリのうちキャッシュ済みの key set がなく取得にも失敗したものがある場合は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
+
+shunt は失効状態を保持しないため、有効なトークンは期限まで使えます。その範囲を制限するのが `max_token_age_seconds` で、issuer は分単位の寿命のトークンを発行すべきです。許可リストからドメインやアドレスを削除した場合は次のリクエストから反映されます。
+
 ## `[server.admin]`（オプション）
 
 このテーブルの存在が、ブラウザーでのアカウントプロビジョニングとアカウントプールの健全性のための管理 Web サーフェスを有効化します（[詳細](/ja/guides/admin-remote-provisioning/)）。テーブルがない場合、`/admin*` ルートは一切登録されません。同じ認証情報が [`[server.spend]`](#serverspendオプション) の spend-limit API も認証します。
@@ -104,6 +140,43 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ |
 
 管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。テーブルの追加・削除と状態パスはどちらも起動時に固定され、設定のリロードでは適用されず警告が記録されます。
+
+### `[server.spend.pricing]`（オプション）
+
+リクエストのコストを定義します。テーブルを省略すると、組み込みの定価に multiplier 1 が適用されます。テーブルとリゾルバーは起動時に検証されますが、stage 1 にはトークン使用量を読むメーターがないため、まだリクエストの価格計算は行われません。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | 定価・override を問わず、解決されたすべての rate に乗算されます。割引を表すため最小 `0.000001`、最大 `1` |
+
+各 `[[server.spend.pricing.overrides]]` 行は、1 つの upstream の 1 つのモデルについて定価を置き換えます。
+
+| キー | 必須 | 意味 |
+| :-- | :-- | :-- |
+| `upstream` | はい | 構成済みの upstream 名である必要があります |
+| `model` | はい | クライアントまたは upstream のモデル id。大文字小文字を区別せずに一致 |
+| `input`, `output`, `cache_read`, `cache_write` | はい | 100 万トークンあたりの USD。それぞれ最小 `0.001`、最大 `18,446,744,073` |
+
+rate はトークンあたりの整数 femto-USD（1e-15 USD）として保持されます。2 つの下限は、その積がちょうどトークンあたり 1 femto-USD ―― メーターが表現できる最小の非ゼロ rate ―― になるように決められています。そのため、受け入れられる rate と multiplier の組み合わせは常にトークンあたり 1 femto-USD 以上になります。下限を下回る値を拒否するのは、もう一方の値が十分に小さいと積が `0` に切り捨てられ、有効な割引に見えながら実際にはリクエストの価格が 0 になるためです。
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+範囲外の multiplier、欠落または範囲外の rate、空の `upstream`、構成されていない upstream を指す `upstream`、1 つの upstream で同じモデルを指す 2 行は、いずれも起動時の検証で失敗します。2 行が衝突するのは文字列が同じときではなく、同じモデルを指すときです。`claude-sonnet-4-6` と `claude-sonnet-4-6-20260217` は 1 つのモデルです。組み込みモデルでもなく、**その行の `upstream`** でどの `[[models]]`・`[[routes]]`・`[[route_prefixes]]` エントリーからも要求できない `model` は、エラーではなく警告を記録します。この検査は upstream 単位で、プレフィックスルートも対象とし、プレフィックスはルーティングとは異なり大文字小文字を区別せずに比較します(ただしルーティングは最初の一致を採用するため、別の場所へルーティングする先行プレフィックスが大文字小文字まで一致する接頭辞として含むプレフィックスは隠れてしまい、対象に含まれません)。行はリクエストのモデルと大文字小文字を区別せずに一致するため、そのモデルのいずれかの綴りがその upstream にルーティングされれば行は到達可能であり、綴りを選ぶのはクライアントだからです。別の upstream の `upstream_model` としてのみマッピングされたモデルは依然として警告され、その行の upstream にある `[[route_prefixes]]` エントリーが処理するモデルは警告されません。`[models.router]` の id は、そのルーターの target と judge が解決される upstream で要求でき(judge の呼び出しもルーターの id で価格が付きます)、`noop` ルーターは自ら upstream を呼び出しません。同じエントリーの `[models.subagents]` オーバーレイは、その呼び出しも親 id で価格が付くため、オーバーレイの target と judge が解決される upstream を加えます。それ以外の upstream にあるその id の行は警告されます。`server.default_provider` を指す行は警告されません。どのルートやプレフィックスにも一致しなかったモデルは、すべてその provider にルーティングされるためです。
+
+モデル id は照合前に正規化されます。Claude Code の `[1m]` コンテキストウィンドウヒント、Bedrock のリージョン接頭辞と `anthropic.` 名前空間、Bedrock の `-v<major>:<minor>` バージョン接尾辞、日付スナップショット接尾辞（`-20260217`、`@20251101`）、そして OpenRouter・Vercel AI Gateway 形式が対象です。後者は `anthropic/` 名前空間を取り除き、ドット区切りのバージョンをハイフンに変換するため、`anthropic/claude-opus-4.8` は `claude-opus-4-8` として価格計算されます。`~anthropic/claude-sonnet-latest` のような浮動エイリアスはバージョンを指定しないため、価格を計算できないままです。
+
+rate は upstream ごとに、最も具体的なものから順に一致します。upstream モデル id に一致する override、次にクライアントモデル id に一致する override、次に同じ組み込みモデルを別の id（日付スナップショット、Bedrock id）で指す override、次に upstream モデルの組み込み定価（クライアントモデルの定価は使わないため、組み込みのクライアント id を Anthropic 以外の upstream モデルに再マッピングしても Anthropic の料金では課金されません）、そして該当なし — 価格を計算できないリクエストです。サーバーサイドのウェブ検索はトークンではなくリクエスト単位（`$0.01`）で課金されるため、multiplier のみが適用されます。すべての金額は USD の**推定値**であり、報告されたトークン数を公開定価に当てはめて計算するため、実際の請求書とセント単位までは一致しません。
 
 ### `[server.spend.enforcement]`（オプション）
 
@@ -193,7 +266,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | `codex` | どの route にも `model` が一致しない inbound request を処理する `[providers.<name>]` テーブル名。`auth = "chatgpt_oauth"` を使う必要があります |
 | `routes` | `[]` | オプションのモデル単位ルーティング（下記参照） |
 
-`POST /backend-api/codex/responses`、`POST /responses`、`POST /v1/responses` を登録し、いずれも指定した provider のアカウントプールが処理します。`[server.auth]` があれば、他のサーバー側 credential ルートと同様に有効なクライアントトークンを要求します。`[server.auth]` がなければ、オペレーターの Codex credential を注入しつつ到達可能な誰にでも**開放**された状態になるため、loopback 以外の環境では必ず保護してください。`/v1/messages` と異なり、request は Anthropic Messages へ変換したりその逆を行ったりせず、アップストリームへそのまま relay されます。
+`/backend-api/codex/responses`、`/responses`、`/v1/responses` のそれぞれに `POST` と `GET`（WebSocket アップグレード）を登録し、いずれも指定した provider のアカウントプールが処理します。`[server.auth]` があれば、他のサーバー側 credential ルートと同様に有効なクライアントトークンを要求します。`[server.auth]` がなければ、オペレーターの Codex credential を注入しつつ到達可能な誰にでも**開放**された状態になるため、loopback 以外の環境では必ず保護してください。`/v1/messages` と異なり、request は Anthropic Messages へ変換したりその逆を行ったりせず、アップストリームへそのまま relay されます。
 
 ### `[[server.codex_endpoint.routes]]`（オプション）
 
@@ -212,9 +285,9 @@ headers = { "x-api-key" = "..." }
 
 このテーブルの存在により、共有アカウントプールのクォータ状態をサニタイズして集約した `GET /usage` が登録されます。管理サーフェスを使わずに、クライアントがスロットリングを予測するためのエンドポイントです（[エンドポイントの詳細](/ja/reference/endpoints/)）。テーブルがなければ、ルートは登録されません。
 
-現在このテーブルにキーはなく、存在だけで有効になります。[`[server.auth]`](#serverauthオプション) が必須です。呼び出し元をクライアントトークンで識別するため、`[server.auth]` なしで `[server.usage]` を設定すると起動に失敗し、プールのテレメトリーを未認証で提供することはありません。
+現在このテーブルにキーはなく、存在だけで有効になります。[`[server.auth]`](#serverauthオプション) または [`[server.gateway]`](#servergatewayオプション) が必須です。呼び出し元をクライアントトークンまたはゲートウェイログインで識別するため、どちらもないまま `[server.usage]` を設定すると起動に失敗し（`UsageEndpointRequiresAuth`）、プールのテレメトリーを未認証で提供することはありません。
 
-`GET /usage` は `/v1/messages` と同じクライアントトークン（設定されたヘッダー、`x-api-key`、または `Authorization: Bearer`）で認証し、ウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(1 - utilization)`、つまりプール全体の容量のうちまだ使われていない割合 — 使い切ったアカウント 9 つと新しいアカウント 1 つなら `0.1` — プール全体の集約値であり、次のリクエストが受け付けられるかの予測ではありません）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted` のステータスを返します。アカウント名、件数、priority、`disabled`、しきい値、アカウント単位の数値は返しません。ウィンドウが `null` になるのは、無効化されていないアカウントがそのウィンドウを一度も報告していない場合だけです。Codex の `x-codex-*` レスポンスヘッダーは 5 時間と共有週次ウィンドウを埋めます。Codex 自体には Fable スコープ（`7d_oi`）のシグナルはありませんが、混在したプロバイダープールでは別のプロバイダーが集約 Fable 値を提供できます。正の `usage_refresh_seconds` を設定すると、オプションの `wham/usage` ポーラーも imported かつ更新可能な `chatgpt_oauth` アカウントのそのウィンドウを埋めます。ポーリングはデフォルトで無効です。
+`GET /usage` は `/v1/messages` と同じクライアントトークン（設定されたヘッダー、`x-api-key`、または `Authorization: Bearer`）、または `Authorization: Bearer` で送られた[ゲートウェイログイン](/ja/guides/gateway-login/)のアクセストークン（`shunt gateway claude` のセッションが送るもの）で認証し、ウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(clamp(cap - utilization, 0, 1))`（`cap` はそのウィンドウについてのアカウントの解決済み `max_utilization*` ハードキャップで、該当するものがなければ `1.0`）、つまりキャップによってアカウントが除外されるまでにプール全体の容量のうちまだ使える割合 — 使い切ったアカウント 9 つとキャップなしの新しいアカウント 1 つなら `0.1`、50% のキャップの下で 44% のアカウントは `0.06` として数えられます。キャップがそのウィンドウのリクエストからすでに除外しているアカウントは 0 として数えられ、`5h` または `7d` のキャップは Fable リクエストからもそのアカウントを除外します — プール全体の集約値であり、次のリクエストが受け付けられるかの予測ではありません）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted`／`capped` のステータスを返します。アカウント名、件数、priority、`disabled`、しきい値、アカウント単位の数値は返しません。ウィンドウが `null` になるのは、無効化されていないアカウントがそのウィンドウを一度も報告していない場合だけです。Codex の `x-codex-*` レスポンスヘッダーは 5 時間と共有週次ウィンドウを埋めます。Codex 自体には Fable スコープ（`7d_oi`）のシグナルはありませんが、混在したプロバイダープールでは別のプロバイダーが集約 Fable 値を提供できます。正の `usage_refresh_seconds` を設定すると、オプションの `wham/usage` ポーラーも imported かつ更新可能な `chatgpt_oauth` アカウントのそのウィンドウを埋めます。ポーリングはデフォルトで無効です。
 
 レスポンスはプール全体の集計を `pool` に持ち、`providers` にはプールされるプロバイダーごとの同じサニタイズ済み集計を、設定されたプロバイダー名（`[providers.<name>]` の `<name>`、または `[[upstreams]]` エントリの `name` であり、アカウントの身元ではありません）をキーとして持ちます。モデルをそのキーに対応付けるのはクライアントの役割です。[`GET /routes`](/ja/reference/endpoints/) は `[[routes]]` に明示されたモデルだけを扱い、`[[models]].upstream_model`、`[[route_prefixes]]`、`server.default_provider` の対応付けを公開するエンドポイントはなく、`GET /v1/models` のエントリにはプロバイダーのフィールドがありません。混在プールでは `pool` がすべてのプロバイダーのアカウントを 1 つの平均にまとめて報告するため、特定のプロバイダーにルーティングするクライアントは、そのプロバイダーの余裕とステータスを `providers.<name>` から読み取ってください。プールされない認証モードのプロバイダーは省略され、Fable スコープのシグナルを持たないプロバイダーの `fable` ウィンドウは、`pool` が値を報告していても `null` です。完全な形は[エンドポイントリファレンス](/ja/reference/endpoints/)を参照してください。
 
@@ -231,13 +304,22 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_5h` | 未設定 | 5 時間ウィンドウのソフトなデフォルト |
 | `default_threshold_7d` | 未設定 | 共有の週次（`7d`）ウィンドウのソフトなデフォルト |
 | `default_threshold_fable` | 未設定 | fable 専用の週次（`7d_oi`）ウィンドウのソフトなデフォルト |
+| `default_max_utilization` | 未設定 | より具体的な値を持たないすべてのウィンドウのハードキャップのデフォルト。これ以上のアカウントは選択から除外されます |
+| `default_max_utilization_5h` | 未設定 | 5 時間ウィンドウのハードキャップのデフォルト |
+| `default_max_utilization_7d` | 未設定 | 共有の週次（`7d`）ウィンドウのハードキャップのデフォルト |
+| `default_max_utilization_fable` | 未設定 | fable 専用の週次（`7d_oi`）ウィンドウのハードキャップのデフォルト。Fable モデルのリクエストにのみ適用されます |
 | `burn_rate_avoidance` | `false` | ウィンドウのリセット前にソフトしきい値を使い切ると予測されるアカウントも回避する |
+| `sort_by_reset` | `false` | バーンレートのヘッドルームではなく、利用可能なアカウントをクォータのリセットが最も早い順(昇順、不明なリセットは最後)に並べ替える。`shunt.toml` を編集せずに、管理ダッシュボードまたは `PATCH /admin/api/pool` でランタイムに切り替え可能 — [プールアカウント制御](/ja/guides/pool-account-controls/)を参照 |
 | `usage_refresh_seconds` | 無効（`0`/未設定） | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` のポーリング間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます |
 | `state_path` | 未設定 | プールのアカウント単位のクォータ状態を保存するファイル。再起動時に空のプールではなく、最後に観測された使用率からウォームスタートします。未設定で永続化は無効（デフォルト） |
 | `ramp_initial_concurrency` | 無効（`0`/未設定） | ストーム制御: トラフィックを受け始めたばかりのアカウントアイデンティティに対する初期の並行受け入れ許容量。`0` または未設定で受け入れゲーティングは無効 |
 | `reprobe_seconds` | このテーブルが存在すれば `900`。`0` で無効 | 陳腐化した近接クォータの Codex/ChatGPT アカウントに対する日和見的な再プローブ間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます。`0` で再プローブは無効。`[server.pool]` 自体が存在しない場合、この値に関係なく再プローブは無効（issue #135 以前の挙動）。WebSocket を使わない outbound Responses 選択とオプションの inbound Codex HTTP エンドポイントは再プローブを維持し、WebSocket 有効時の outbound 選択では無効 |
 
 各ウィンドウ `X` について、有効なソフトしきい値は次の順で解決されます: アカウントの `threshold_X` → アカウントの `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`。これは `hard_threshold` を上限としてクランプされます。すべてのしきい値は `[0.0, 1.0]` の使用率の割合であり、範囲外の値は起動時にエラーになります。しきい値とバーンレートのノブが選択に影響するのは Anthropic と Codex/ChatGPT の 2 ファミリーです。Anthropic は `anthropic-ratelimit-unified-*` ヘッダー、Codex/ChatGPT は `x-codex-*` の 5 時間／週次ウィンドウを使います（Codex には Fable 用の `7d_oi` はありません）。`usage_refresh_seconds` は imported の `antigravity_oauth` アカウントも Code Assist の `retrieveUserQuotaSummary` RPC でポーリングします。Antigravity の summary は **Gemini Models** と **Claude + GPT Models** の 2 つの共有クォータプールを返し、プランで提供される場合は各プールに 5 時間と週次のウィンドウがあります。これらはダッシュボード表示専用で、プール選択には使われません。
+
+ハードキャップはソフトしきい値とは別物です。各ウィンドウ `X` について、有効なハードキャップは次の順で解決されます: アカウントの `max_utilization_X` → アカウントの `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → キャップなし。`hard_threshold` では制限されず、アカウントのキャップは `[server.pool]` がなくても機能します。ストアのスキャンで見つかったアカウント（`[[providers.X.accounts]]` エントリがないもの）にはプールのデフォルトのみが適用されます。すべてのキャップは `[0.0, 1.0]` の範囲の使用率で、それ以外の値は起動と `shunt check` を失敗させます。アカウントを並べ替えるだけの `threshold_*` や `hard_threshold` と異なり、対象ウィンドウで観測された使用率がキャップ以上のアカウントは選択から除外されます。5 時間と共有週次のキャップはすべてのリクエストに適用され、Fable のキャップは Fable モデルのリクエストにのみ、かつそのアカウントの `7d_oi` 使用率が観測されたあとにのみ適用されます。使用率が観測されていないウィンドウは除外しません。除外されたアカウントは、使用率がキャップを下回ると自動的に再び選択対象になります。ウィンドウのリセットまたは失効、より低い観測値、設定リロード時のキャップ引き上げがその経路です。キャップは新しいルーティングを止めるだけで正確な予算ではなく、ディスパッチ済みのリクエストのために使用量を確保することもないため、処理中または同時のリクエストは消費した分だけキャップを超過することがあります。キャップにより選択可能なアカウントがプールに残らない場合、shunt はゲートウェイが生成する HTTP `429` `rate_limit_error`（"all selectable accounts for provider '…' are at their max_utilization cap for this request"）を返し、最も早い復帰時刻が分かる場合は `retry-after` を付けます。アップストリームの `429` と同様に [`[[upstreams]]`](#upstreams順序付きフェイルオーバー) のフェイルオーバーチェーンを進めるため、後続のアップストリーム（従量課金の場合もあります）がリクエストを処理し、どれも処理できない場合にのみクライアントは `429` を受け取ります。ただし、すでに Codex/ChatGPT プールにコミット済み（HTTP `200` 送信済み）のストリーミングリクエストは、後続のアップストリームが処理できない場合、HTTP `429` や `retry-after` ヘッダーではなく、ストリーム内の終端 SSE `error` イベントを受け取ります。インバウンドの Codex エンドポイントでは、同じエラーが OpenAI のエラー形式で返ります。キャップは Claude OAuth プール（5h、7d、`7d_oi`）と Codex/ChatGPT プール（5 時間と週次のウィンドウ。Fable 用キーはここでは無効）で有効です。Kimi OAuth プールでも、Kimi のアップストリームが使用率ヘッダーを報告する場合はキャップが適用されます。報告は観測されていないため、実際には無効のままで、観測されていないウィンドウは除外しません。Antigravity のクォータはキャップに反映されません。管理ダッシュボードはキャップに達したアカウントを「Capped」、Fable のみのキャップなら「Capped (Fable)」と表示するとともに、設定された各キャップをアカウントの使用量バーとプール表に示し、`GET /admin/api/pool` はアカウントごとに解決済みの `max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable` を報告します（割合で、そのウィンドウに適用されるキャップがなければ `null`）。`GET /usage` は利用可能なアカウントがなく、有効（`disabled` でない）かつ一時停止されていないアカウントのうち 1 つ以上がキャップに達している場合にプール状態 `capped` を報告します。例: アカウントに `max_utilization_fable = 0.5` を設定すると、Opus はそのアカウントを使い続ける一方、Fable はそのアカウントの Fable 週次バケットの約 50% までしか使いません。
+
+アカウントレベルのキー `max_utilization`、`max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable` は、各 `[[providers.X.accounts]]` エントリに設定します。詳細は英語版リファレンスの [accounts テーブル](/reference/configuration/#providersnameaccounts)を参照してください。
 
 正の `usage_refresh_seconds` は、Claude の公式 usage API、Codex/ChatGPT の非公式 `wham/usage`、Antigravity の非公開 `retrieveUserQuotaSummary` RPC を対象にバックグラウンドポーラーを起動します。未設定または `0` で無効（デフォルト）です。ポーリングするのは imported（更新可能）なアカウントだけで、長期の `claude setup-token` と `token_env` 資格情報はスキップします。Claude では報告された各ウィンドウの使用率・リセット時刻・使用率観測時刻を補正し、status の鮮度はヘッダー由来のままです。Codex では使用率とその観測時刻を補正し、リセットメタデータは応答由来、status はヘッダー由来のままです。保存済みの未来のリセットは保持し、経過したものだけを新しい使用率の書き込み前に消去します。wham の `reset_at` は実際のリセットメタデータとして採用しません。Antigravity では本番ホスト表記を既存の daily-host resolver で正規化し、Gemini / Claude+GPT の grouped windows をダッシュボード用フィールドにだけ保存します。generic な選択用 quota state には反映しません。非公開 schema は fail-soft に扱い、間隔は起動時に固定され、設定リロードでは開始・停止・再調整しません。
 
@@ -595,7 +677,10 @@ WebSocket のイベント間(最初のイベントを待つ間を含む)と、�
 待つ時間も間隔に含まれます。shunt がローカルでトークンを数える時間(最大 1 秒)は応答を読むのと
 並行して進むので、間隔を過ぎて届いた応答はそのまま打ち切られます。エラー応答の本文も同じ間隔の
 中で読みます。`chatgpt_oauth` のアカウントプールのアカウントがすべて失敗したあとに中継する
-エラー本文は、最後のアカウントが失敗した時点から計り直した間隔の中で読みます。リクエストを送り直すと、間隔も計り直します。こうした呼び出しの途中で Antigravity
+エラー本文は、最後のアカウントが失敗した時点から計り直した間隔の中で読みます。OpenAI Responses
+の宛先では、エラー本文の読み取りは 5 秒で終わります。それまでに 1 バイトも届かない本文は、間隔がそれより長くても停止と
+みなして打ち切ります。届き始めたものの読み終わらなかった本文は、そのステータスを示すメッセージに
+置き換えて、ステータスとともに中継します。リクエストを送り直すと、間隔も計り直します。こうした呼び出しの途中で Antigravity
 のモデルカタログのキャッシュが空で取得が走る場合も、同じ上限で読みます。上限に達したカタログは、
 カタログなしで shunt が推測するモデル id にフォールバックし、次のクライアントターンが改めて
 取得します。

@@ -60,6 +60,51 @@ pub struct AdapterError {
     pub failure: Option<AdapterFailure>,
 }
 
+/// The gateway-owned error for a pool whose every selectable account is held
+/// out by a `max_utilization` cap. It is a 429 in the Anthropic error shape
+/// carrying `failure: UpstreamStatus(429)`, so the `[[upstreams]]` chain
+/// advances past it like an upstream rate limit (a `None` failure would stop the
+/// chain). `retry-after` is the whole seconds until the earliest eligibility,
+/// when known.
+fn cap_exhausted_error(provider: &str, exhaustion: crate::accounts::CapExhaustion) -> AdapterError {
+    let message = format!(
+        "all selectable accounts for provider '{provider}' are at their max_utilization cap for this request"
+    );
+    let mut response = crate::error::ShuntError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limit_error",
+        message.clone(),
+    )
+    .into_response();
+    if let Some(seconds) = exhaustion.retry_after_secs() {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(seconds),
+        );
+    }
+    AdapterError {
+        message,
+        response: Box::new(response),
+        failure: Some(AdapterFailure::UpstreamStatus(
+            StatusCode::TOO_MANY_REQUESTS,
+        )),
+    }
+}
+
+/// The cap-exhaustion error for a pool whose empty order is down to
+/// `max_utilization` caps, with the `capped` rotation metric recorded. `None`
+/// when no account is capped (a pause or outage keeps its own exit). `cap` is
+/// the verdict from the `select_order*_with_cap` call that produced the empty
+/// order, so it cannot disagree with that order; callers read it only then.
+pub(crate) fn cap_exhausted(
+    route: &Route,
+    cap: Option<crate::accounts::CapExhaustion>,
+) -> Option<AdapterError> {
+    let exhaustion = cap?;
+    crate::metrics::record_pool_rotation(&route.provider, "capped");
+    Some(cap_exhausted_error(&route.provider, exhaustion))
+}
+
 /// The byte cap a bounded call's upstream reply crossed.
 ///
 /// Carries no partial body — the point of the cap is that the bytes past it are
@@ -103,7 +148,9 @@ pub(crate) fn mark_body_broke(mut error: AdapterError) -> AdapterError {
     error
 }
 
-/// The idle gap a bounded call's upstream body went silent past.
+/// The silence that ended a bounded call's upstream body: the call's idle gap,
+/// or the error-envelope budget when a gated error body sent no byte before
+/// that budget ended (#710).
 ///
 /// Travels as an extension on the adapter error's response, like
 /// [`UpstreamBodyTooLarge`]: `routing::serve` reads it back to cut a gated turn

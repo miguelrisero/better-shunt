@@ -1701,6 +1701,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
     vars.set(client_env, "device:client-token-value");
     let mut config = admin_config_with_keys(admin_env);
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
     });
@@ -5301,4 +5302,179 @@ async fn a_second_codex_completion_cannot_race_the_first_one_to_the_account_stor
         !stored.contains("CODEX-REFRESH-SECOND"),
         "the failed completion must not have reached the store"
     );
+}
+
+/// The pool endpoint carries each account's request counters: exact totals
+/// (a cancelled attempt counted apart from the failures) and the mean header
+/// latency for an account with attempts, and zeros with a present-but-`null`
+/// mean for one without.
+#[tokio::test]
+async fn admin_pool_reports_request_counters_per_account() {
+    use shunt::accounts::AttemptOutcome;
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_POOL_COUNTERS", "ops:counters-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POOL_COUNTERS");
+    let pooled = |name: &str| AccountConfig {
+        name: name.to_string(),
+        uuid: Some(format!("{name}-uuid")),
+        credentials: Some(nonexistent_credentials_path()),
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
+        ..Default::default()
+    };
+    let (served, idle) = (pooled("served"), pooled("idle"));
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![served.clone(), idle.clone()];
+    let (gateway, state) = start_with_state(config).await;
+    // Selection creates the entries a request's attempts land on.
+    state
+        .accounts
+        .select_order("anthropic", &[served.clone(), idle], None, None, None);
+    let answered = |status, millis| AttemptOutcome::Headers {
+        status,
+        latency: std::time::Duration::from_millis(millis),
+    };
+    state
+        .accounts
+        .note_attempt("anthropic", &served, answered(StatusCode::OK, 100));
+    state.accounts.note_attempt(
+        "anthropic",
+        &served,
+        answered(StatusCode::SERVICE_UNAVAILABLE, 300),
+    );
+    state
+        .accounts
+        .note_attempt("anthropic", &served, AttemptOutcome::BeforeHeaders);
+    state
+        .accounts
+        .note_attempt("anthropic", &served, AttemptOutcome::Cancelled);
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/api/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "counters-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let accounts = body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .unwrap()["accounts"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let counters = |name: &str| {
+        let row = accounts
+            .iter()
+            .find(|account| account["name"] == name)
+            .unwrap();
+        [
+            "requests_attempted",
+            "requests_succeeded",
+            "requests_failed",
+            "requests_cancelled",
+            "mean_latency_ms",
+        ]
+        .map(|key| row.get(key).cloned())
+    };
+    assert_eq!(
+        counters("served"),
+        [
+            Some(serde_json::json!(4)),
+            Some(serde_json::json!(1)),
+            Some(serde_json::json!(2)),
+            Some(serde_json::json!(1)),
+            Some(serde_json::json!(200.0)),
+        ]
+    );
+    assert_eq!(
+        counters("idle"),
+        [
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!(0)),
+            Some(serde_json::Value::Null),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn admin_pool_marks_a_capped_account_with_both_cap_flags_and_unavailable() {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_POOL_CAPPED", "ops:capped-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POOL_CAPPED");
+    let pooled = |name: &str| AccountConfig {
+        name: name.to_string(),
+        uuid: Some(format!("{name}-uuid")),
+        credentials: Some(nonexistent_credentials_path()),
+        store_family: Some(shunt::accounts::StoreFamily::Claude),
+        ..Default::default()
+    };
+    let (mut capped, fresh) = (pooled("capped"), pooled("fresh"));
+    capped.max_utilization_5h = Some(0.5);
+    capped.max_utilization_fable = Some(0.5);
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![capped.clone(), fresh.clone()];
+    let (gateway, state) = start_with_state(config).await;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        (
+            "anthropic-ratelimit-unified-5h-utilization",
+            "0.9".to_string(),
+        ),
+        ("anthropic-ratelimit-unified-5h-reset", reset.to_string()),
+        (
+            "anthropic-ratelimit-unified-7d_oi-utilization",
+            "0.9".to_string(),
+        ),
+        ("anthropic-ratelimit-unified-7d_oi-reset", reset.to_string()),
+    ] {
+        headers.insert(name, HeaderValue::from_str(&value).unwrap());
+    }
+    state.accounts.note_quota("anthropic", &capped, &headers);
+    state
+        .accounts
+        .note_quota("anthropic", &fresh, &HeaderMap::new());
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/api/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "capped-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let accounts = body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .unwrap()["accounts"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let row = |name: &str| accounts.iter().find(|a| a["name"] == name).unwrap().clone();
+    let capped_row = row("capped");
+    assert_eq!(capped_row["capped"], true, "{capped_row}");
+    assert_eq!(capped_row["capped_fable"], true, "{capped_row}");
+    assert_eq!(capped_row["available"], false, "{capped_row}");
+    let fresh_row = row("fresh");
+    assert_eq!(fresh_row["capped"], false);
+    assert_eq!(fresh_row["capped_fable"], false);
+    assert_eq!(fresh_row["available"], true);
 }

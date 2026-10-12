@@ -89,6 +89,7 @@ impl Match for HeaderAbsent {
 
 struct TestGateway {
     base_url: String,
+    state: shunt::server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -229,6 +230,7 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
     });
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -382,6 +384,7 @@ async fn analytics_sink_matches_inbound_auth_posture() {
     vars.set(&tokens_env, "cli:analytics-secret");
     let mut config = test_config("http://127.0.0.1:1", vec![]);
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -671,6 +674,66 @@ async fn rotates_on_429_then_relays_last_upstream_verbatim_on_exhaustion() {
 }
 
 #[tokio::test]
+async fn capped_pool_returns_the_cap_429_in_the_openai_shape_with_retry_after() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token = chatgpt_token(FAR_FUTURE_EXP, "acct-inbound-capped");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_CAPPED", &token);
+    let reset_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 16_200;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header("x-codex-primary-reset-at", reset_at.to_string().as_str())
+                .set_body_string("ok"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut capped = account("capped", "SHUNT_TEST_INBOUND_CAPPED");
+    capped.max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(test_config(&upstream.uri(), vec![capped])).await;
+
+    assert_eq!(
+        post_responses(&gateway, "/v1/responses", None, None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let response = post_responses(&gateway, "/v1/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after: u64 = response
+        .headers()
+        .get("retry-after")
+        .expect("retry-after survives the OpenAI re-shape")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((16_000..=16_200).contains(&retry_after), "{retry_after}");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(
+        body.get("type").is_none() || body["type"] != "error",
+        "must not be the Anthropic envelope: {body}"
+    );
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("max_utilization"));
+    assert!(body["error"].get("type").is_some(), "{body}");
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn session_id_header_sticks_to_one_account() {
     // The Codex CLI `session-id` header is the pool sticky key: the same session
     // maps to the same account across requests (SHA-256 bucket assignment).
@@ -740,6 +803,7 @@ async fn inbound_auth_gates_the_endpoint() {
         vec![account("account-auth", "SHUNT_TEST_INBOUND_AUTH")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -786,6 +850,7 @@ async fn authorization_bearer_authenticates_the_endpoint() {
         vec![account("account-bearer", "SHUNT_TEST_INBOUND_BEARER")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -863,6 +928,7 @@ async fn forwards_client_identity_headers_verbatim_and_strips_shunt_token() {
         vec![account("account-hdr", "SHUNT_TEST_INBOUND_HDR")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -1598,6 +1664,7 @@ async fn gateway_owned_401_body_is_openai_shaped() {
         vec![account("account-401-shape", "SHUNT_TEST_INBOUND_401_SHAPE")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -1883,4 +1950,81 @@ async fn model_refusal_on_every_account_relays_the_refusal_verbatim() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response.text().await.unwrap(), MODEL_REFUSAL);
     upstream.verify().await;
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the 401
+/// and the refreshed retry of the passthrough are two attempts on one
+/// account, one failed and one served, both with headers.
+#[tokio::test]
+async fn refresh_retry_counts_two_attempts_on_one_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-counted");
+    let fresh = chatgpt_token(expires_at + 1, "acct-counted");
+
+    let dir = unique_temp_dir("counted");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("{}", "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![store_account_at("account-a", &store_path)],
+    ))
+    .await;
+    let response = post_responses(&gateway, "/responses", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+    auth.verify().await;
+
+    // Keyed by the account id `resolve_pool_accounts` reads off the
+    // credential file, as the pool keys it.
+    let resolved = AccountConfig {
+        uuid: Some("acct-counted".to_string()),
+        ..store_account_at("account-a", &store_path)
+    };
+    let snapshot = &gateway
+        .state
+        .accounts
+        .snapshot("codex", &[resolved], None, None)[0];
+    assert_eq!(
+        (
+            snapshot.requests_attempted,
+            snapshot.requests_succeeded,
+            snapshot.requests_failed
+        ),
+        (2, 1, 1)
+    );
+    assert!(snapshot.mean_latency_ms.is_some());
+
+    fs::remove_dir_all(&dir).ok();
 }

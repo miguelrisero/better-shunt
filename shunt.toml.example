@@ -28,6 +28,19 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # header = "x-shunt-token"           # (default) header the client sends
 # tokens_env = "SHUNT_CLIENT_TOKENS" # (default) env var with name:token pairs
 
+# --- Optional: accept JWTs from your own identity provider instead of (or
+# alongside) the static tokens above. shunt verifies against the issuer's JWKS
+# and issues nothing itself — no login flow, no session, no signing secret, so
+# clients stay out of Claude Code's gateway provider mode. A JWT is accepted
+# only in Authorization: Bearer. With an entry configured, tokens_env above may
+# be unset; with neither, startup still fails closed. Repeat the table per
+# issuer (docs/inbound-jwt-auth.md).
+# [[server.auth.jwt]]
+# issuer = "https://accounts.google.com"       # exact `iss`; JWKS via discovery
+# audience = ["<client id dedicated to shunt>"] # string or array
+# email_domains = ["example.com"]              # exact match after the final `@`
+# max_token_age_seconds = 3600                 # (default) reject `exp - iat` above this
+
 # --- Optional: admin web surface for browser account provisioning and pool health.
 # Separate from client auth: admin credentials never live here as literals.
 # The name:token pairs come from the env as
@@ -85,6 +98,14 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # default_threshold_5h = 0.95    # per-window overrides
 # default_threshold_7d = 0.9
 # default_threshold_fable = 0.85 # Fable-only 7d_oi bucket
+# Hard caps (unlike the soft thresholds, which only reorder): an account at or
+# above the cap is EXCLUDED from selection for requests that window governs.
+# Resolves: account max_utilization_<X> -> account max_utilization ->
+# default_max_utilization_<X> -> default_max_utilization -> no cap.
+# default_max_utilization = 0.95
+# default_max_utilization_5h = 0.9
+# default_max_utilization_7d = 0.95
+# default_max_utilization_fable = 0.9 # Fable-only 7d_oi bucket; governs Fable requests only
 # burn_rate_avoidance = false    # avoid projected exhaustion before reset
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
 #                                    APIs for refreshable Claude, Codex, and

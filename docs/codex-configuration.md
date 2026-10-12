@@ -180,18 +180,18 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `authorization` | `Bearer <access_token>` |
 | `chatgpt-account-id` | `<account_id>` |
 | `originator` | `codex_cli_rs` |
-| `user-agent` | `codex_cli_rs/0.159.2` (`CODEX_USER_AGENT`) |
-| `version` | `0.159.2` (`CODEX_CLIENT_VERSION`) |
+| `user-agent` | `codex_cli_rs/0.159.3` (`CODEX_USER_AGENT`) |
+| `version` | `0.159.3` (`CODEX_CLIENT_VERSION`) |
 | `x-codex-routing-hint` | `model=<upstream_model>`, or `model=<upstream_model>;tier=<service_tier>` when a tier is set — omitted when the model can't be safely put in a header (see below) |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
 | `content-encoding` | `zstd` — only when the request body was compressed (see §4.5) |
 
-shunt pins `user-agent` and `version` to **openai/codex rust-v0.159.2**. If a future slug
+shunt pins `user-agent` and `version` to **openai/codex rust-v0.159.3**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
 `src/adapters/responses/request.rs`.
 
-The pinned `0.159.2` identity works with `gpt-6.1-sol` on an entitled account.
+On an entitled account, `gpt-6.1-sol` was rejected with the `0.156.0` identity and completed with `0.159.2`, even though its catalog `minimal_client_version` is 0.153.0. `0.159.3` is the next upstream patch release.
 A stale identity can produce a model-not-supported error even when the account has access.
 This pin does not specify the minimum required version.
 
@@ -553,6 +553,13 @@ other signal; it is sent only when explicitly configured. shunt does not gate `s
 model capability: it forwards whatever value is configured, and the upstream rejects any value the
 target model doesn't support.
 
+**Codex CLI's per-model default differs:** the Codex CLI defaults `gpt-6-sol` and `gpt-6-luna` to
+Fast (`priority`), because their `models.json` entry sets `default_service_tier`. That default is
+applied client-side by the Codex CLI, not by the backend, so on a translated route (Claude Code →
+shunt → Codex), these models run at the standard tier unless you set `service_tier = "fast"`. The
+inbound Codex endpoint ([`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md)) is a
+byte-faithful passthrough, so a Codex CLI pointed at shunt keeps the tier it sends itself.
+
 **xAI/Grok exception:** the field is withheld for the `xai` and `grok` provider flavors even when
 configured — xAI's Responses API 400s on `service_tier`, and the Grok CLI flavor inherits xAI's
 request-shaping rules (§6 of [`m6-xai-provider.md`](m6-xai-provider.md)).
@@ -831,7 +838,7 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - No model-based routing **by default** — every inbound request goes to the one configured
   provider, regardless of the `model` field in the body. §17.5 opts specific models out of that.
 - **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
-  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.159.2`/`version=0.159.2`, `OpenAI-Beta`, session
+  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.159.3`/`version=0.159.3`, `OpenAI-Beta`, session
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
   request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
   and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips
@@ -842,7 +849,9 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - On pool exhaustion, the last upstream response is relayed **verbatim** rather than re-shaped
   into an Anthropic-style error — the opposite of §13's outbound Codex pool, which re-shapes the
   last response into an Anthropic error envelope (`build_upstream_error`).
-- HTTP/SSE only, even if the target provider has `websocket = true`.
+- Two inbound transports on the same three paths: HTTP `POST` (byte-faithful SSE passthrough) and
+  a WebSocket `GET` upgrade that relays each upstream SSE event as a text frame through the first
+  terminal event. Neither depends on the target provider's outbound `websocket = true`.
 
 See [`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md) for the full spec, including
 the exact failover/cooldown table and reload semantics.

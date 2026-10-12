@@ -48,6 +48,42 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 `tokens_env` 自身的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))——它仍然指向 shunt 用来读取 token 的环境变量。
 
+### `[[server.auth.jwt]]`(可选)
+
+一个表数组,增加第二种入站凭据:由外部 identity provider 签发的 JWT,shunt **只验证、从不签发** —— 没有登录流程、没有会话存储、没有签名 secret。客户端的配置方式与静态 token 完全相同(base URL 加 bearer),因此不同于 `[server.gateway]` 登录,它不会让 Claude Code 进入 gateway provider 模式,也不会失去该模式禁用的客户端功能。参见[行为规范](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)。
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # 配置了 JWT issuer 后即为可选
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<专供 shunt 使用的 client id>"]
+email_domains = ["example.com"]
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `issuer` | 必填 | `iss` 精确匹配。必须使用 HTTPS,仅 `localhost` 和 `127.0.0.1` 允许 HTTP;可以带路径 |
+| `audience` | 必填 | 接受的 `aud` 值,字符串或数组 |
+| `email_domains` | `[]` | 不区分大小写的域名,与最后一个 `@` 之后的部分**精确**匹配,不是后缀匹配 |
+| `allowed_emails` | `[]` | 不区分大小写的完整邮箱地址 |
+| `algorithms` | `["RS256"]` | 接受的签名算法,仅限非对称算法 |
+| `authorized_parties` | `audience` | `azp` claim 存在时接受的值 |
+| `clock_skew_seconds` | `0` | 应用于 `exp` 和 `nbf` 的容差 |
+| `max_token_age_seconds` | `3600` | `exp - iat` 超过该值时拒绝 |
+| `jwks_url` | discovery | 为不提供 discovery 文档的 issuer 显式指定 JWKS 端点 |
+
+每个条目都需要 `issuer`、`audience`,以及至少一个 `email_domains` 或 `allowed_emails` 值。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
+
+只要存在至少一个条目,`tokens_env` 就可以解析为空 —— 完全通过 IdP 认证的部署没有静态 token 需要设置。既没有可解析的 token 列表也没有条目时,`[server.auth]` 仍然启动失败。
+
+JWT **只**通过 `Authorization: Bearer` 接受 —— 不接受配置的 `header`,也不接受 `x-api-key`。这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true` 和邮箱允许列表。验证通过的邮箱成为日志和用量归属中的调用方身份;超过 256 字节的地址会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
+
+key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动。缓存的 key set 最多信任 5 分钟,之后由下一个请求尝试重新拉取(受 60 秒重新拉取下限约束);拉取成功会整体替换 key set,因此 issuer 撤下的密钥大约 5 分钟内就不再参与验证。拉取失败时会继续使用已过期的 key set,以免 IdP 故障变成全面故障;discovery 本身失败时则改为尝试上次发现的 `jwks_uri`。只有条目的 `issuer` 和 `jwks_url` 都未变化时,config reload 才会保留已缓存的密钥。未知的 `kid` 在每个 key set 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
+
+shunt 不保存吊销状态,所以有效的 token 会一直可用到过期:限制这一范围的是 `max_token_age_seconds`,issuer 应当签发分钟级寿命的 token。从允许列表中移除域名或地址会在下一次请求时生效。
+
 ## `[server.admin]`(可选)
 
 存在此表即启用管理 Web 界面,用于浏览器账户预配与账户池健康状况([详情](/zh-cn/guides/admin-remote-provisioning/))。此表不存在时,任何 `/admin*` 路由都不会注册。同一凭据也用于认证 [`[server.spend]`](#serverspend可选) 的 spend-limit API。
@@ -104,6 +140,43 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `state_path` | `~/.shunt/gateway-spend.json` | 保存限制与审计记录的带版本 JSON 文件;`""` 表示仅内存 |
 
 请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。该表的增删与状态路径都在启动时固定,配置重载只会记录警告而不会应用。
+
+### `[server.spend.pricing]`(可选)
+
+定义一次请求的成本。省略该表表示使用内置标价并以 multiplier 1 计算。该表及其解析器会在启动时校验,但 stage 1 没有读取 token 用量的计量器,因此尚不会对任何请求计价。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | 对解析出的所有费率生效,无论标价还是 override。用于表示折扣,最小 `0.000001`,最大 `1` |
+
+每个 `[[server.spend.pricing.overrides]]` 行为某个 upstream 上的某个模型替换标价:
+
+| 键 | 必填 | 含义 |
+| :-- | :-- | :-- |
+| `upstream` | 是 | 必须是已配置的 upstream 名称 |
+| `model` | 是 | 客户端或 upstream 模型 id,匹配时不区分大小写 |
+| `input`、`output`、`cache_read`、`cache_write` | 是 | 每百万 token 的 USD,各自最小 `0.001`,最大 `18,446,744,073` |
+
+费率以每 token 的整数 femto-USD(1e-15 USD)存储。这两个下限的乘积恰好是每 token 1 femto-USD,即计量器能表示的最小非零费率,因此任何被接受的费率与 multiplier 组合的计价都不低于每 token 1 femto-USD。低于下限的值会被拒绝,因为当另一项也足够小时,乘积会向下取整为 `0`,看起来像有效折扣,实际却把请求计价为 0。
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由不同,按大小写不敏感匹配前缀(但路由采用第一个匹配,因此被前面路由到别处、且以大小写完全一致的方式作为其前缀的条目所遮蔽的前缀不计入)——行与请求模型按大小写不敏感匹配,因此只要该模型的任一拼写能路由到该 upstream,该行就是可达的,而拼写由客户端决定:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。`[models.router]` 的 id 可在其 target 与 judge 解析到的 upstream 上请求(judge 调用同样按路由器 id 计价),而 `noop` 路由器自身不调用任何 upstream;同一条目上的 `[models.subagents]` 覆盖层的调用同样按父 id 计价,因此还会加入其 target 与 judge 解析到的 upstream。该 id 在其他 upstream 上的行会告警。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。
+
+模型 id 在匹配前会被规范化:Claude Code 的 `[1m]` 上下文窗口提示、Bedrock 区域前缀与 `anthropic.` 命名空间、Bedrock 的 `-v<major>:<minor>` 版本后缀、日期快照后缀(`-20260217`、`@20251101`),以及 OpenRouter / Vercel AI Gateway 形式——后者会去掉 `anthropic/` 命名空间并把点号版本改为连字符,因此 `anthropic/claude-opus-4.8` 按 `claude-opus-4-8` 计价;而 `~anthropic/claude-sonnet-latest` 这类浮动别名未指定版本,仍无法计价。
+
+费率按 upstream 逐一匹配,从最具体的开始:匹配 upstream 模型 id 的 override,其次是匹配客户端模型 id 的 override,再次是以其他 id(日期快照、Bedrock id)指向同一内置模型的 override,然后是 upstream 模型的内置标价(不使用客户端模型的标价,因此把内置客户端 id 重映射到非 Anthropic 的 upstream 模型时不会按 Anthropic 费率计费),最后是无 — 该请求无法计价。服务端网页搜索按请求计费(`$0.01`)而非按 token,因此只有 multiplier 生效。所有金额均为 USD **估算值**,由上报的 token 数按公开标价计算得出,不会与账单精确到分。
 
 ### `[server.spend.enforcement]`(可选)
 
@@ -193,7 +266,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | `codex` | 处理所有未被任何 route 的 `model` 匹配的入站请求的 `[providers.<name>]` 表名。必须使用 `auth = "chatgpt_oauth"` |
 | `routes` | `[]` | 可选的按模型路由(见下文) |
 
-注册 `POST /backend-api/codex/responses`、`POST /responses` 和 `POST /v1/responses`,均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
+在 `/backend-api/codex/responses`、`/responses` 和 `/v1/responses` 上分别注册 `POST` 与 `GET`(WebSocket 升级),均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
 
 ### `[[server.codex_endpoint.routes]]`(可选)
 
@@ -212,9 +285,9 @@ headers = { "x-api-key" = "..." }
 
 存在此表会注册面向客户端的 `GET /usage`,返回共享账户池配额状态的**净化聚合**视图,使非管理员客户端无需管理界面也能预判限流([端点详情](/zh-cn/reference/endpoints/))。没有此表时,该路由不会注册。
 
-此表目前没有键,仅凭存在即启用。它**要求 [`[server.auth]`](#serverauth可选)**:端点通过客户端 token 识别调用方,因此配置 `[server.usage]` 却没有 `[server.auth]` 时启动会失败,不会在未认证的情况下提供池遥测。
+此表目前没有键,仅凭存在即启用。它**要求 [`[server.auth]`](#serverauth可选) 或 [`[server.gateway]`](#servergateway可选)**:端点通过客户端 token 或网关登录识别调用方,因此配置 `[server.usage]` 却两者都没有时启动会失败(`UsageEndpointRequiresAuth`),不会在未认证的情况下提供池遥测。
 
-`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`)进行认证,并返回每个窗口的剩余余量(报告该窗口的未禁用账户的 `mean(1 - utilization)`,即整个池的总容量中尚未使用的比例 —— 九个耗尽账户加一个全新账户读作 `0.1` —— 这是池级聚合值,不预测下一个请求是否会被放行)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
+`GET /usage` 使用与 `/v1/messages` 相同的客户端 token(配置的头部、`x-api-key` 或 `Authorization: Bearer`),或以 `Authorization: Bearer` 发送的[网关登录](/zh-cn/guides/gateway-login/)访问 token(即 `shunt gateway claude` 会话发送的值)进行认证,并返回每个窗口的剩余余量(报告该窗口的未禁用账户的 `mean(clamp(cap - utilization, 0, 1))`,其中 `cap` 是该账户在该窗口上解析得到的 `max_utilization*` 硬上限,没有适用上限时为 `1.0`,即在上限将账户排除之前整个池的总容量中仍可使用的比例 —— 九个耗尽账户加一个无上限的全新账户读作 `0.1`,而处于 50% 上限之下、使用率为 44% 的账户只计 `0.06`;已被上限排除在该窗口请求之外的账户计为零,`5h` 或 `7d` 上限也会将其排除在 Fable 请求之外 —— 这是池级聚合值,不预测下一个请求是否会被放行)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted`/`capped` 状态。它不会暴露账户名称、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口。Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。正的 `usage_refresh_seconds` 只轮询 imported 且可刷新的 `chatgpt_oauth` 账户;轮询默认关闭,获取或解析失败会保留既有状态。
 
 响应在 `pool` 下给出池级聚合,并在 `providers` 下以配置的提供方名称(即 `[providers.<name>]` 中的 `<name>` 或 `[[upstreams]]` 条目的 `name`,而非账户身份)为键,为每个参与池化的提供方给出同样经过净化的聚合。将模型对应到该键是客户端的职责:[`GET /routes`](/zh-cn/reference/endpoints/) 只覆盖 `[[routes]]` 中明确列出的模型,没有端点公开 `[[models]].upstream_model`、`[[route_prefixes]]` 或 `server.default_provider` 的映射,而 `GET /v1/models` 条目不包含提供方字段。在混合池中,`pool` 报告的是把所有提供方账户混在一起的平均值,因此路由到某一提供方的客户端应从 `providers.<name>` 读取该提供方自身的余量和状态。认证模式不参与池化的提供方会被省略;没有 Fable 范围信号的提供方,其 `fable` 窗口即使在 `pool` 报告了值时也是 `null`。完整形态见[端点参考](/zh-cn/reference/endpoints/)。
 
@@ -231,13 +304,22 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_5h` | 未设置 | 5 小时窗口的软默认值 |
 | `default_threshold_7d` | 未设置 | 共享周(`7d`)窗口的软默认值 |
 | `default_threshold_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的软默认值 |
+| `default_max_utilization` | 未设置 | 没有更具体取值的任何窗口的硬上限默认值;达到或超过它的账户会被移出选择 |
+| `default_max_utilization_5h` | 未设置 | 5 小时窗口的硬上限默认值 |
+| `default_max_utilization_7d` | 未设置 | 共享周(`7d`)窗口的硬上限默认值 |
+| `default_max_utilization_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的硬上限默认值;只作用于 Fable 模型请求 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
+| `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage` 和 Antigravity `POST :retrieveUserQuotaSummary` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
 | `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认) |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
 | `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。非 WebSocket 的 outbound Responses 选择和可选的 inbound Codex HTTP 端点会保留重新探测;WebSocket 启用时的 outbound 选择会禁用重新探测 |
 
 对每个窗口 `X`,生效的软阈值按账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold` 的顺序解析,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率。真正参与选择阈值与 burn-rate 的两个家族是 Anthropic 与 Codex/ChatGPT:Anthropic 使用 `anthropic-ratelimit-unified-*` 头部,Codex/ChatGPT 使用 `x-codex-*` 的 5 小时/周窗口(Codex 没有 Fable 专用 `7d_oi`)。`usage_refresh_seconds` 也会通过 Code Assist 的 `retrieveUserQuotaSummary` RPC 轮询 imported `antigravity_oauth` 账户。Antigravity summary 返回两个共享配额池:**Gemini Models** 和 **Claude + GPT Models**;若账号方案提供相应窗口,每个池都有 5 小时和每周窗口。这些值仅在仪表盘展示,不参与池选择。
+
+硬上限与软阈值是两回事。对每个窗口 `X`,生效的硬上限按账户 `max_utilization_X` → 账户 `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → 无上限 解析。它不受 `hard_threshold` 钳制,账户上限在没有 `[server.pool]` 时同样生效;通过存储扫描得到的账户(没有 `[[providers.X.accounts]]` 条目)只获得池默认值。每个上限都是 `[0.0, 1.0]` 范围内的使用率,其他取值会使启动和 `shunt check` 失败。`threshold_*` 与 `hard_threshold` 只对账户重新排序,而在某个起作用的窗口里已观测到的使用率达到或超过其上限的账户会被移出选择。5 小时与共享周上限作用于每个请求;Fable 上限只作用于 Fable 模型请求,且只有在该账户的 `7d_oi` 使用率已被观测到之后才起作用。没有观测到使用率的窗口从不剔除账户。被剔除的账户在使用率降到上限以下后会自动重新可选:途径是窗口重置或过期、更低的观测值,或配置重载时调高上限。上限只阻止新的路由,并不是精确的预算,也不会为已分派的请求预留用量,因此进行中或并发的请求可能超出上限,超出量取决于它们实际消耗的量。当上限使池中没有可选账户时,shunt 返回网关自身生成的 HTTP `429` `rate_limit_error`("all selectable accounts for provider '…' are at their max_utilization cap for this request"),在已知最早可用时间时附带 `retry-after`。与上游 `429` 一样,它会推进 [`[[upstreams]]`](#upstreams有序故障转移) 故障转移链,因此后面的上游(可能是按量付费)会处理该请求;只有都无法处理时客户端才会看到这个 `429`。但对于已提交到 Codex/ChatGPT 池(已发送 HTTP `200`)的流式请求,若后面的上游都无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`,也没有 `retry-after` 头。在入站 Codex 端点上,同一错误以 OpenAI 错误形态返回。上限对 Claude OAuth 池(5h、7d、`7d_oi`)和 Codex/ChatGPT 池(5 小时与周窗口;Fable 的键在那里不起作用)有效。Kimi OAuth 池在 Kimi 上游报告使用率头时同样适用上限;目前尚未观测到其报告,因此实际上保持不起作用,未观测到的窗口从不剔除账户。Antigravity 的配额不计入上限。管理仪表板把达到上限的账户显示为 "Capped",仅 Fable 上限则显示 "Capped (Fable)",并把已配置的各上限标注在账户的使用量条和池表格中,`GET /admin/api/pool` 按账户报告解析后的 `max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable`(为比例,该窗口没有生效上限时为 `null`);当没有可用账户且至少有一个已启用(非 `disabled`)且未暂停的账户达到上限时,`GET /usage` 报告池状态 `capped`。示例:在账户上设置 `max_utilization_fable = 0.5`,可让 Fable 最多只用该账户 Fable 周桶的约 50%,而 Opus 仍可继续使用它。
+
+账户级键 `max_utilization`、`max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable` 在每个 `[[providers.X.accounts]]` 条目上设置,详见英文参考页的 [accounts 表](/reference/configuration/#providersnameaccounts)。
 
 正的 `usage_refresh_seconds` 会启动后台轮询器,分别读取 Claude 的官方 usage API、Codex/ChatGPT 的非官方 `wham/usage` 以及 Antigravity 的非公开 `retrieveUserQuotaSummary` RPC;未设置或为 `0` 时禁用(默认)。只轮询 imported(可刷新)账户;长期 `claude setup-token` 与 `token_env` 凭据会被跳过。Claude 会对账每个报告窗口的用量、重置时刻和用量观测时间,status 的新鲜度仍来自响应头。Codex 会对账用量与观测时间,重置元数据来自响应,status 元数据仍来自头部;未来的已存重置会保留,已经过去的重置会在写入新用量前清除,wham 的 `reset_at` 不会被当作实际重置元数据。Antigravity 会通过现有 daily-host resolver 规范化生产主机写法,并只把 Gemini / Claude+GPT 的 grouped windows 写入仪表盘 quota-bucket 字段,不会写入通用的选择 quota state。非公开 schema 采用 fail-soft 解析;轮询间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
 
@@ -581,7 +663,8 @@ CLI 的 stdout 计,含行终止符;Cursor 按保留的文本与工具调用字�
 握手(复用连接池中的连接时为存活检查)和第一个事件的时间,都计入间隔。shunt 在本地计算 token 的
 时间(最多 1 秒)与读取回复同时进行,因此超出间隔才到达的回复仍会被截断。错误响应的正文也在同一
 间隔内读取;`chatgpt_oauth` 账户池的账户全部失败后转发的错误正文,则在从最后一个账户失败时
-重新计时的间隔内读取。重新发送的请求会重新开始计时。在这些调用中因缓存为空而触发的 Antigravity 模型目录拉取,也按同样的上限读取;被拒绝
+重新计时的间隔内读取。对 OpenAI Responses 目标,错误正文的读取最多持续 5 秒:到那时仍未收到任何字节的正文,即使间隔
+更长也视为停滞而截断;已经开始到达但未读完的正文,则替换为注明该状态码的消息,连同状态码一并转发。重新发送的请求会重新开始计时。在这些调用中因缓存为空而触发的 Antigravity 模型目录拉取,也按同样的上限读取;被拒绝
 的目录会回退到没有目录时 shunt 推测的模型 id,下一次客户端回合会重新拉取。
 
 #### `type = "llm_classifier"`

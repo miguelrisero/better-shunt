@@ -52,12 +52,23 @@ export interface ObservedAccount {
 
 export interface PoolAccount {
   name: string;
+  /** Opaque provider-scoped identity used by runtime account mutations. */
+  account_ref?: string | null;
   plan?: string | null;
   status?: string | null;
   disabled?: boolean;
+  paused?: boolean;
   needs_relogin?: boolean;
   has_state?: boolean;
   near_quota?: boolean;
+  /** A 5h or 7d `max_utilization` hard cap excludes the account from every request. */
+  capped?: boolean;
+  /** The Fable (7d_oi) cap excludes the account from Fable requests only. */
+  capped_fable?: boolean;
+  /** Resolved `max_utilization` hard cap per window, as a fraction; null when none governs it. */
+  max_utilization_5h?: number | null;
+  max_utilization_7d?: number | null;
+  max_utilization_fable?: number | null;
   cooldown_secs_remaining?: number | null;
   cooldown_fable_secs_remaining?: number | null;
   utilization_5h?: number | null;
@@ -74,6 +85,15 @@ export interface PoolProvider {
   /** The provider's configured auth kind, e.g. `claude_oauth`. */
   auth?: string | null;
   accounts?: PoolAccount[];
+}
+
+/**
+ * `sortByReset` is process-wide (`[server.pool]` is not per-provider), so it
+ * rides alongside the provider list rather than inside it.
+ */
+export interface PoolData {
+  providers: PoolProvider[];
+  sortByReset: boolean;
 }
 
 export interface ClaudeStoreAccount {

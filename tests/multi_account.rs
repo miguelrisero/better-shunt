@@ -761,6 +761,99 @@ async fn exhausted_pool_relays_the_last_upstream_body_verbatim() {
     upstream.verify().await;
 }
 
+/// Mock that answers the first request 200 with an observed 5h utilization (so
+/// the pool learns the account's usage), then fails the test if it is hit again.
+async fn mount_observed_5h(upstream: &MockServer, utilization: &str, reset: u64) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", utilization)
+                .insert_header("anthropic-ratelimit-unified-5h-reset", reset.to_string())
+                .set_body_string(r#"{"type":"message"}"#),
+        )
+        .expect(1)
+        .mount(upstream)
+        .await;
+}
+
+#[tokio::test]
+async fn capped_pool_returns_a_gateway_429_naming_the_cap_with_retry_after() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["fake-oauth-", "capped-a"].concat();
+    vars.set("SHUNT_TEST_MULTI_CAPPED_A", &token);
+    let upstream = MockServer::start().await;
+    let reset = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    mount_observed_5h(&upstream, "0.9", reset).await;
+
+    let mut capped = account("account-a", "SHUNT_TEST_MULTI_CAPPED_A", "uuid-a");
+    capped.max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(test_config_accounts(&upstream.uri(), vec![capped])).await;
+
+    // First request is served and teaches the pool the account is at 0.9.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after: u64 = response
+        .headers()
+        .get("retry-after")
+        .expect("retry-after when the reset is known")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((3_500..=3_600).contains(&retry_after), "{retry_after}");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_utilization"),
+        "{body}"
+    );
+    // The capped account was never offered a second request.
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn pool_exhausted_only_by_failures_keeps_the_generic_response_without_caps() {
+    // A cap is configured but never reached: the exhausted pool must keep the
+    // relayed upstream 429, not become a cap-exhaustion error.
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["fake-oauth-", "uncapped-a"].concat();
+    vars.set("SHUNT_TEST_MULTI_UNCAPPED_A", &token);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .insert_header("anthropic-ratelimit-unified-5h-status", "rejected")
+                .set_body_string("upstream-rejected"),
+        )
+        .mount(&upstream)
+        .await;
+    let mut only = account("account-a", "SHUNT_TEST_MULTI_UNCAPPED_A", "uuid-a");
+    only.max_utilization_5h = Some(0.99);
+    let gateway = start_gateway_with(test_config_accounts(&upstream.uri(), vec![only])).await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.text().await.unwrap(), "upstream-rejected");
+}
+
 #[tokio::test]
 async fn refresh_retry_refreshes_then_succeeds_on_401() {
     // A refreshable store account whose upstream returns 401 forces a token
@@ -2401,4 +2494,71 @@ async fn a_relayed_client_error_after_refresh_clears_a_stale_mark() {
     auth.verify().await;
 
     fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: a
+/// headerless 429 is a generic throttle (`PauseSame`), so the pool waits out
+/// its `retry-after: 0` and retries the same account — the 429 counts as a
+/// failure, the retry's 200 as a success, and both received headers.
+#[tokio::test]
+async fn a_throttle_pause_retry_counts_as_a_second_attempt_on_the_same_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "counted-a"].concat();
+    let token_b = ["fake-oauth-", "counted-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_COUNTED_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_COUNTED_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"a"}"#))
+        .with_priority(2)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_COUNTED_A", "uuid-counted-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_COUNTED_B", "uuid-counted-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+
+    let snapshot = &state
+        .accounts
+        .snapshot("anthropic", &[account_a], None, None)[0];
+    assert_eq!(
+        (
+            snapshot.requests_attempted,
+            snapshot.requests_succeeded,
+            snapshot.requests_failed
+        ),
+        (2, 1, 1)
+    );
+    assert!(
+        snapshot.mean_latency_ms.is_some(),
+        "both attempts received headers, so both are latency samples"
+    );
+    upstream.verify().await;
 }

@@ -75,6 +75,10 @@ impl ShuntError {
     pub fn bad_gateway(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_GATEWAY, "api_error", message)
     }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
 }
 
 impl IntoResponse for ShuntError {
@@ -141,8 +145,11 @@ pub(crate) async fn bounded_upstream_text(
 /// is the gap and the instant it started, the request's send, so the first
 /// wait for the body is the rest of the gap the header wait began, and each
 /// chunk after it refreshes the gap (#704). `Err` when the gap closes inside
-/// the budget: that is the caller's bound, carried back as its marker. Every
-/// other outcome is [`bounded_upstream_text`]'s.
+/// the budget: that is the caller's bound, carried back as its marker. `Err`
+/// too when the budget ends before the body sent a single byte, carrying the
+/// budget as the silence it measured: a body that never started is a stall
+/// whichever bound ends it, so a gap longer than the budget still cuts it
+/// (#710). Every other outcome is [`bounded_upstream_text`]'s.
 pub(crate) async fn bounded_upstream_text_within(
     mut upstream: reqwest::Response,
     budget: std::time::Duration,
@@ -153,6 +160,7 @@ pub(crate) async fn bounded_upstream_text_within(
     let mut deadline = since + idle;
     let mut bytes: Vec<u8> = Vec::new();
     let mut over_cap = false;
+    let mut delivered = false;
     loop {
         let chunk = match tokio::time::timeout_at(deadline.min(budget_at), upstream.chunk()).await {
             Ok(Ok(Some(chunk))) => chunk,
@@ -163,8 +171,10 @@ pub(crate) async fn bounded_upstream_text_within(
             Err(_) if deadline < budget_at => {
                 return Err(crate::adapters::UpstreamBodyIdle { idle })
             }
+            Err(_) if !delivered => return Err(crate::adapters::UpstreamBodyIdle { idle: budget }),
             Err(_) => return Ok(None),
         };
+        delivered |= !chunk.is_empty();
         deadline = tokio::time::Instant::now() + idle;
         // Past the cap, keep draining (as `bounded_upstream_text` does) so the
         // connection can be reused, retaining only the prefix.
@@ -238,6 +248,12 @@ struct OpenAiErrorDetail {
 /// behavior) is unchanged.
 pub async fn into_openai_error_shape(response: Response) -> Response {
     let status = response.status();
+    // The body is rebuilt, so carry the one header that tells the client when to
+    // retry (the cap-exhaustion 429 sets it); the rest are framing for the old body.
+    let retry_after = response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .cloned();
     // Gateway-owned error bodies are tiny JSON envelopes; cap the read at 64 KiB
     // as defense-in-depth. The bound is never hit in practice, and an oversized
     // body degrades to the empty-message fallback below rather than an OOM.
@@ -268,7 +284,7 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
                 .unwrap_or_default();
             ("api_error".to_string(), message)
         });
-    (
+    let mut shaped = (
         status,
         Json(OpenAiErrorBody {
             error: OpenAiErrorDetail {
@@ -278,7 +294,13 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
             },
         }),
     )
-        .into_response()
+        .into_response();
+    if let Some(retry_after) = retry_after {
+        shaped
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, retry_after);
+    }
+    shaped
 }
 
 #[cfg(test)]

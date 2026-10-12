@@ -8,7 +8,7 @@ use axum::{
 use futures_util::StreamExt;
 
 use crate::{
-    accounts::{self, FailoverAction},
+    accounts::{self, CountAttempt, FailoverAction},
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{
         self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
@@ -190,7 +190,7 @@ async fn forward_claude_oauth(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
     let is_fable = accounts::is_fable_model(Some(route.upstream_model.as_str()));
-    let order = state.accounts.select_order(
+    let (order, cap) = state.accounts.select_order_with_cap(
         &route.provider,
         &accounts,
         session_id,
@@ -286,13 +286,10 @@ async fn forward_claude_oauth(
         }
         let request_body = request_body.into_raw();
 
-        let upstream = match post_upstream(
-            &state,
-            &url,
-            request_headers.clone(),
-            request_body.clone(),
-        )
-        .await
+        let send = post_upstream(&state, &url, request_headers.clone(), request_body.clone());
+        let upstream = match send
+            .count_attempt(&state.accounts, &route.provider, account)
+            .await
         {
             Ok(response) => response,
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
@@ -688,6 +685,14 @@ async fn forward_claude_oauth(
         }
     }
 
+    if candidates == 0 {
+        // An empty order is a pause, a cap, or both; only a cap gets its own
+        // error and metric reason. A pause alone keeps the generic exit below.
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
+            return Err(error);
+        }
+    }
+
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
         return relay_response(&state, &route, response, None, bounds).await;
@@ -780,7 +785,7 @@ async fn forward_kimi_oauth(
     let session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
-    let order = state.accounts.select_order(
+    let (order, cap) = state.accounts.select_order_with_cap(
         &route.provider,
         &accounts,
         session_id,
@@ -843,7 +848,10 @@ async fn forward_kimi_oauth(
         safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         let request_body = base_body.clone().into_raw();
 
-        let upstream = match post_upstream(&state, &url, request_headers, request_body).await {
+        let upstream = match post_upstream(&state, &url, request_headers, request_body)
+            .count_attempt(&state.accounts, &route.provider, account)
+            .await
+        {
             Ok(response) => response,
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
                 return Err(error.into_adapter_error(upstream_error));
@@ -913,6 +921,15 @@ async fn forward_kimi_oauth(
                 );
                 last_response = Some(upstream);
             }
+        }
+    }
+
+    // Same cap exit as forward_claude_oauth: Kimi records quota through
+    // note_quota, so caps exclude a Kimi account whenever its upstream reports
+    // utilization.
+    if candidates == 0 {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
+            return Err(error);
         }
     }
 
@@ -998,7 +1015,10 @@ async fn retry_upstream(
     body: Vec<u8>,
     fail_msg: &str,
 ) -> Result<Option<reqwest::Response>, AdapterError> {
-    match post_upstream(state, url, headers, body).await {
+    match post_upstream(state, url, headers, body)
+        .count_attempt(&state.accounts, &route.provider, account)
+        .await
+    {
         Ok(response) => {
             state
                 .accounts

@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, HeaderValue};
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
-/// These headers mirror the client identity from openai/codex rust-v0.159.2.
+/// These headers mirror the client identity from openai/codex rust-v0.159.3.
 ///
 /// The ChatGPT backend routes newer model slugs (e.g. gpt-6-sol and gpt-6-luna,
 /// which have `minimal_client_version: 0.155.0`) by client identity and
@@ -20,16 +20,21 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// `pub(crate)`: also reused by `crate::auth::codex::usage` (the wham/usage
 /// poller) so its CLI identity headers cannot drift from the Responses
 /// adapter's own.
-pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.159.2";
-pub(crate) const CODEX_CLIENT_VERSION: &str = "0.159.2";
+pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.159.3";
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.159.3";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription
 /// surface (`cli-chat-proxy.grok.com`) gates on these headers: without them it
 /// answers as if the caller were an unentitled API client. Sent only with the
 /// `XaiOauth` (subscription bearer) credential.
+///
+/// The proxy also enforces a minimum client version: a stale one is answered
+/// `426 Upgrade Required` ("Your Grok CLI version (…) is outdated", issue
+/// #755; the floor was 1.0.13 at the time). Track the `latest` dist-tag of the
+/// official `@xai-official/grok` npm package when bumping.
 const GROK_CLIENT_IDENTIFIER: &str = "grok-shell";
-const GROK_CLIENT_VERSION: &str = "0.2.93";
+const GROK_CLIENT_VERSION: &str = "1.0.46";
 
 /// Upper bound on the `upstream_model` slug interpolated into the routing hint.
 /// Shares the value of `observability::MAX_MODEL_TAG_LEN`, which bounds this
@@ -964,9 +969,9 @@ mod tests {
         assert_eq!(request.headers().get("originator").unwrap(), "codex_cli_rs");
         assert_eq!(
             request.headers().get("user-agent").unwrap(),
-            "codex_cli_rs/0.159.2"
+            "codex_cli_rs/0.159.3"
         );
-        assert_eq!(request.headers().get("version").unwrap(), "0.159.2");
+        assert_eq!(request.headers().get("version").unwrap(), "0.159.3");
         assert_eq!(
             request.headers().get("x-codex-routing-hint").unwrap(),
             "model=gpt-6.1-sol"
@@ -1310,7 +1315,7 @@ mod tests {
         );
         assert_eq!(
             request.headers().get("x-grok-client-version").unwrap(),
-            "0.2.93"
+            "1.0.46"
         );
         assert_eq!(
             request.headers().get("accept").unwrap(),

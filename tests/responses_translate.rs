@@ -1799,6 +1799,12 @@ fn classifies_slow_down_overload_and_policy_codes() {
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limit_error",
         ),
+        // rust-v0.159.3 `FlexUnavailable`: no capacity for the flex tier.
+        (
+            "flex_unavailable",
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+        ),
         ("server_is_overloaded", overloaded, "overloaded_error"),
         (
             "invalid_prompt",
@@ -1837,11 +1843,14 @@ fn classifies_slow_down_overload_and_policy_codes() {
         );
     }
 
-    // `slow_down` classifies from the plain `error` event and a bare top-level
-    // `code` as well, not only the nested `response.failed` shape.
+    // `slow_down` and `flex_unavailable` classify from the plain `error` event
+    // and a bare top-level `code` as well, not only the nested `response.failed`
+    // shape.
     for data in [
         json!({"type": "error", "error": {"code": "slow_down", "message": "nope"}}),
         json!({"code": "slow_down", "message": "nope"}),
+        json!({"type": "error", "error": {"code": "flex_unavailable", "message": "nope"}}),
+        json!({"code": "flex_unavailable", "message": "nope"}),
     ] {
         assert_eq!(
             backend_error_status(&data),
@@ -1869,6 +1878,10 @@ fn classifies_a_wrapped_websocket_error_by_its_status() {
         (
             json!({"type": "error", "status": 500, "error": {"code": "invalid_prompt"}}),
             StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"type": "error", "status": 503, "error": {"code": "flex_unavailable"}}),
+            StatusCode::TOO_MANY_REQUESTS,
         ),
         (
             json!({"type": "error", "error": {"message": "no status"}}),
