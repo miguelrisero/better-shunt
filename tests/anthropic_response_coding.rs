@@ -280,17 +280,19 @@ async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
 #[tokio::test]
 async fn alias_route_preserves_coded_bodyless_status() {
     let _env = common::env_lock().await;
-    let upstream = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(204).insert_header("content-encoding", "gzip"))
-        .expect(1)
-        .mount(&upstream)
-        .await;
-    let gateway = gateway(config(upstream.uri(), true)).await;
-    let response = request(&gateway, "gzip", true, false, false).await;
-    assert_eq!(response.status(), 204);
-    assert_eq!(response.headers()["content-encoding"], "gzip");
-    assert!(response.bytes().await.unwrap().is_empty());
+    for status in [204, 205] {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).insert_header("content-encoding", "gzip"))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let gateway = gateway(config(upstream.uri(), true)).await;
+        let response = request(&gateway, "gzip", true, false, false).await;
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()["content-encoding"], "gzip");
+        assert!(response.bytes().await.unwrap().is_empty());
+    }
 }
 
 #[test]

@@ -118,7 +118,7 @@ pub(crate) fn normalize(upstream: reqwest::Response) -> reqwest::Response {
 }
 
 fn bodyless(status: axum::http::StatusCode) -> bool {
-    status.is_informational() || status == 204 || status == 304
+    status.is_informational() || matches!(status.as_u16(), 204 | 205 | 304)
 }
 
 pub(crate) fn encode_response(response: axum::response::Response) -> axum::response::Response {

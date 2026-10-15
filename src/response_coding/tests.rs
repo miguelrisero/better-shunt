@@ -338,7 +338,7 @@ fn accept_encoding_keeps_order_and_quality_values() {
 
 #[tokio::test]
 async fn bodyless_statuses_stay_unmarked_but_empty_success_is_truncated() {
-    for status in [100, 103, 204, 304] {
+    for status in [100, 103, 204, 205, 304] {
         let response = Response::builder()
             .status(status)
             .header(header::CONTENT_ENCODING, "gzip")

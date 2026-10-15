@@ -89,7 +89,7 @@ compressed SSE body from waiting in a plaintext frame accumulator. Internal
 judge and gated calls consume the decoded body. Gated replay retains the coding
 marker for client-side encoding. A committed mixed chain relays the decoded
 Anthropic winner in its existing unencoded SSE response. Informational, 204,
-and 304 responses are not decoded or marked; a coded 200 with an empty body
+205, and 304 responses are not decoded or marked; a coded 200 with an empty body
 still fails as truncated input.
 
 The outbound offer retains gzip, deflate, zstd, identity entries, and `*;q=0`
