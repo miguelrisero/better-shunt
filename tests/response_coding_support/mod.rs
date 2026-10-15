@@ -19,6 +19,107 @@ pub const START: &str = "event: message_start\ndata: {\"type\":\"message_start\"
 pub const TINY: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n";
 pub const END: &str = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
 
+pub fn gzip_pending_fixture() -> (Vec<u8>, Vec<u8>, String) {
+    for padding in 0..258 {
+        let text = format!(
+            "{START}event: large\ndata: {}\n\n{}",
+            "x".repeat(15 * 1024 + padding),
+            TINY.repeat(500)
+        );
+        let bytes = compressed("gzip", text.as_bytes());
+        let mut inflate = flate2::Decompress::new(false);
+        let mut first = [0; 16 * 1024];
+        inflate
+            .decompress(&bytes[10..], &mut first, flate2::FlushDecompress::None)
+            .unwrap();
+        assert_eq!(inflate.total_out(), first.len() as u64);
+        let split = 10 + inflate.total_in() as usize;
+        let mut pending = [0; 16 * 1024];
+        inflate
+            .decompress(&[], &mut pending, flate2::FlushDecompress::None)
+            .unwrap();
+        let len = inflate.total_out() as usize;
+        let expected = &text[..len];
+        // Pick an exhausted input slice whose pending match completes a small event.
+        if expected
+            .rfind("\n\n")
+            .is_some_and(|end| end + 2 > first.len())
+        {
+            return (
+                bytes[..split].to_vec(),
+                bytes[split..].to_vec(),
+                expected.to_owned(),
+            );
+        }
+    }
+    panic!("fixture must leave a complete event in inflate's pending output");
+}
+
+pub fn old_gzip_reader_stops_before_pending_event(prefix: &[u8], complete_end: usize) {
+    struct TemporaryInput<'a>(&'a [u8]);
+    impl Read for TemporaryInput<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let len = std::io::BufRead::fill_buf(self)?.len().min(output.len());
+            output[..len].copy_from_slice(&self.0[..len]);
+            std::io::BufRead::consume(self, len);
+            Ok(len)
+        }
+    }
+    impl std::io::BufRead for TemporaryInput<'_> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.0.is_empty() {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            } else {
+                Ok(self.0)
+            }
+        }
+        fn consume(&mut self, len: usize) {
+            self.0 = &self.0[len..];
+        }
+    }
+    let mut decoder = flate2::bufread::MultiGzDecoder::new(TemporaryInput(prefix));
+    let mut output = [0; 16 * 1024];
+    let mut received = 0;
+    loop {
+        match decoder.read(&mut output) {
+            Ok(0) => panic!("the old reader must wait for transport input"),
+            Ok(len) => received += len,
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                assert!(
+                    received < complete_end,
+                    "old reader unexpectedly drained the event"
+                );
+                break;
+            }
+        }
+    }
+}
+
+pub async fn gated_piece(prefix: Vec<u8>, tail: Vec<u8>) -> (Server, oneshot::Sender<()>) {
+    let (release, released) = oneshot::channel::<()>();
+    let pieces = std::sync::Arc::new(std::sync::Mutex::new(Some((prefix, tail, released))));
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        axum::routing::post(move || {
+            let (prefix, tail, released) = pieces.lock().unwrap().take().unwrap();
+            async move {
+                let body = stream::iter([Ok::<_, std::convert::Infallible>(Bytes::from(prefix))])
+                    .chain(stream::once(async move {
+                        let _ = released.await;
+                        Ok(Bytes::from(tail))
+                    }));
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .header("content-encoding", "gzip")
+                    .body(Body::from_stream(body))
+                    .unwrap()
+            }
+        }),
+    );
+    (serve(app).await, release)
+}
+
 pub struct Server {
     pub url: String,
     task: JoinHandle<()>,
@@ -216,6 +317,8 @@ pub async fn gated(
 /// pieces; the caller can require a complete event while upstream remains gated.
 pub struct ClientDecoder {
     kind: ClientDecode,
+    coding: String,
+    wire: Vec<u8>,
     pub text: String,
 }
 
@@ -236,29 +339,68 @@ impl ClientDecoder {
                 }
                 _ => panic!("unknown client coding"),
             },
+            coding: coding.to_owned(),
+            wire: Vec::new(),
             text: String::new(),
         }
     }
 
-    fn push(&mut self, bytes: &[u8]) {
+    pub fn push(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.wire.extend_from_slice(bytes);
         let out = match &mut self.kind {
             ClientDecode::Gzip(decoder) => {
-                decoder.write_all(bytes).unwrap();
-                decoder.flush().unwrap();
+                decoder.write_all(bytes)?;
+                decoder.flush()?;
                 std::mem::take(decoder.get_mut())
             }
             ClientDecode::Deflate(decoder) => {
-                decoder.write_all(bytes).unwrap();
-                decoder.flush().unwrap();
+                decoder.write_all(bytes)?;
+                decoder.flush()?;
                 std::mem::take(decoder.get_mut())
             }
             ClientDecode::Zstd(decoder) => {
-                decoder.write_all(bytes).unwrap();
-                decoder.flush().unwrap();
+                decoder.write_all(bytes)?;
+                decoder.flush()?;
                 std::mem::take(decoder.get_mut())
             }
         };
         self.text.push_str(std::str::from_utf8(&out).unwrap());
+        Ok(())
+    }
+
+    pub fn finish(&self) -> std::io::Result<()> {
+        // Independently validate EOF, including gzip CRC/ISIZE and zstd frame completion.
+        let mut output = Vec::new();
+        match self.coding.as_str() {
+            "gzip" => {
+                flate2::read::MultiGzDecoder::new(self.wire.as_slice()).read_to_end(&mut output)?;
+            }
+            "deflate" => {
+                let mut decoder = flate2::Decompress::new(true);
+                output.reserve(self.text.len() + 1);
+                let status = decoder
+                    .decompress_vec(&self.wire, &mut output, flate2::FlushDecompress::Finish)
+                    .map_err(std::io::Error::other)?;
+                if status != flate2::Status::StreamEnd
+                    || decoder.total_in() as usize != self.wire.len()
+                {
+                    return Err(std::io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            "zstd" => {
+                output = zstd::stream::decode_all(self.wire.as_slice())?;
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(output, self.text.as_bytes());
+        Ok(())
+    }
+
+    pub async fn complete(&mut self, response: &mut reqwest::Response) {
+        while let Some(bytes) = response.chunk().await.unwrap() {
+            self.push(&bytes).unwrap();
+        }
+        self.finish().expect("client coding must complete at EOF");
     }
 
     pub async fn until(
@@ -269,7 +411,7 @@ impl ClientDecoder {
         tokio::time::timeout(Duration::from_secs(4), async {
             while !predicate(&self.text) {
                 let bytes = response.chunk().await.unwrap().expect("body ended before complete event");
-                self.push(&bytes);
+                self.push(&bytes).unwrap();
             }
         }).await.unwrap_or_else(|error| panic!("decoded event must arrive before upstream gate opens: {error}; decoded so far: {:?}", self.text));
     }

@@ -39,33 +39,52 @@ impl UpstreamCoding {
     }
 }
 
-/// Keep supported offers in client order, including their parameters. Explicit
-/// identity needs no upstream negotiation; an empty filtered offer is omitted.
+/// Keep supported offers and identity exclusions in client order. Fall back to
+/// explicit identity unless the client excludes it and offers no supported coding.
 pub(crate) fn filter_accept_encoding(headers: &mut HeaderMap) {
-    let offers: Vec<_> = headers
+    let mut identity = None;
+    let mut wildcard_excludes_identity = false;
+    let mut offers = Vec::new();
+    for offer in headers
         .get_all(header::ACCEPT_ENCODING)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|offer| {
-            let token = offer.split(';').next().unwrap_or_default().trim();
-            UpstreamCoding::parse(token).is_some() || token.eq_ignore_ascii_case("identity")
-        })
-        .map(str::to_owned)
-        .collect();
+    {
+        let offer = offer.trim();
+        let mut parts = offer.split(';');
+        let token = parts.next().unwrap_or_default().trim();
+        let quality = parts
+            .filter_map(|part| part.trim().split_once('='))
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
+            .and_then(|(_, value)| value.trim().parse::<f32>().ok())
+            .unwrap_or(1.0);
+        if token.eq_ignore_ascii_case("identity") {
+            identity = Some(quality > 0.0);
+        }
+        if token == "*" && quality == 0.0 {
+            wildcard_excludes_identity = true;
+        }
+        if UpstreamCoding::parse(token).is_some()
+            || token.eq_ignore_ascii_case("identity")
+            || token == "*" && quality == 0.0
+        {
+            offers.push(offer.to_owned());
+        }
+    }
     let has_coding = offers
         .iter()
         .any(|offer| UpstreamCoding::parse(offer.split(';').next().unwrap_or_default()).is_some());
-    headers.remove(header::ACCEPT_ENCODING);
-    if !has_coding {
+    if !has_coding && !identity.unwrap_or(!wildcard_excludes_identity) {
+        // Preserve the original offer for the unsupported-coding passthrough path.
         return;
     }
-    if let Ok(value) = HeaderValue::from_str(&offers.join(", ")) {
-        if !offers.is_empty() {
-            headers.insert(header::ACCEPT_ENCODING, value);
-        }
-    }
+    let value = if has_coding {
+        HeaderValue::from_str(&offers.join(", ")).expect("filtered header entries remain valid")
+    } else {
+        HeaderValue::from_static("identity")
+    };
+    headers.insert(header::ACCEPT_ENCODING, value);
 }
 
 fn decode_slots() -> &'static tokio::sync::Semaphore {
@@ -80,6 +99,9 @@ fn encode_slots() -> &'static tokio::sync::Semaphore {
 
 /// Leave unsupported and stacked codings on the existing passthrough path.
 pub(crate) fn normalize(upstream: reqwest::Response) -> reqwest::Response {
+    if bodyless(upstream.status()) {
+        return upstream;
+    }
     let mut values = upstream.headers().get_all(header::CONTENT_ENCODING).iter();
     let coding = values
         .next()
@@ -98,7 +120,14 @@ pub(crate) fn normalize(upstream: reqwest::Response) -> reqwest::Response {
     Response::from_parts(parts, reqwest::Body::wrap_stream(decode(stream, coding))).into()
 }
 
+fn bodyless(status: axum::http::StatusCode) -> bool {
+    status.is_informational() || status == 204 || status == 304
+}
+
 pub(crate) fn encode_response(response: axum::response::Response) -> axum::response::Response {
+    if bodyless(response.status()) {
+        return response;
+    }
     let Some(coding) = response.extensions().get::<UpstreamCoding>().copied() else {
         return response;
     };

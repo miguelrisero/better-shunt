@@ -70,60 +70,72 @@ async fn internal_judge_reads_compressed_json_before_client_encoding() {
 async fn gated_capture_recognizes_compressed_terminal_frames() {
     use gated_harness::*;
     let _env = env().await;
-    let (strong, efficient, responses, judge) = (
-        MockServer::start().await,
-        MockServer::start().await,
-        MockServer::start().await,
-        MockServer::start().await,
-    );
-    messages_mock(
-        sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
-        0,
-    )
-    .mount(&strong)
-    .await;
-    let body = anthropic_sse(EFFICIENT_UPSTREAM_MODEL, "DECODED-WEAK-ANSWER");
-    messages_mock(
-        ResponseTemplate::new(200)
-            .insert_header("content-encoding", "zstd")
-            .set_body_raw(compressed("zstd", body.as_bytes()), "text/event-stream"),
-        1,
-    )
-    .mount(&efficient)
-    .await;
-    messages_mock(
-        judge_text(r#"{"escalate":false,"reason":"progressing"}"#),
-        1,
-    )
-    .mount(&judge)
-    .await;
-    let tiers = Tiers::of(&strong, &efficient, &responses, judge.uri());
-    let gateway = start_gateway(gated_config(&tiers, &escalation_router("efficient-alias"))).await;
-    let response = client().post(format!("{}/v1/messages", gateway.base_url))
+    for streaming in [true, false] {
+        let (strong, efficient, responses, judge) = (
+            MockServer::start().await,
+            MockServer::start().await,
+            MockServer::start().await,
+            MockServer::start().await,
+        );
+        messages_mock(
+            sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+            0,
+        )
+        .mount(&strong)
+        .await;
+        let body = if streaming {
+            anthropic_sse(EFFICIENT_UPSTREAM_MODEL, "DECODED-WEAK-ANSWER")
+        } else {
+            json!({"type":"message", "role":"assistant", "model":EFFICIENT_UPSTREAM_MODEL,
+            "content":[{"type":"text","text":"DECODED-WEAK-ANSWER"}], "stop_reason":"end_turn"})
+            .to_string()
+        };
+        messages_mock(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "zstd")
+                .set_body_raw(
+                    compressed("zstd", body.as_bytes()),
+                    if streaming {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                ),
+            1,
+        )
+        .mount(&efficient)
+        .await;
+        messages_mock(
+            judge_text(r#"{"escalate":false,"reason":"progressing"}"#),
+            1,
+        )
+        .mount(&judge)
+        .await;
+        let tiers = Tiers::of(&strong, &efficient, &responses, judge.uri());
+        let gateway =
+            start_gateway(gated_config(&tiers, &escalation_router("efficient-alias"))).await;
+        let response = client().post(format!("{}/v1/messages", gateway.base_url))
         .header("x-shunt-token", CLIENT_TOKEN)
-        .header("accept-encoding", "zstd")
-        .json(&json!({"model":ROUTER_ID,"max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hello"}]}))
+        .header("accept-encoding", "zstd, identity;q=0")
+        .json(&json!({"model":ROUTER_ID,"max_tokens":16,"stream":streaming,"messages":[{"role":"user","content":"hello"}]}))
         .send().await.unwrap();
-    assert_eq!(response.status(), 200);
-    assert_eq!(
-        response.headers()["x-gateway-route-source"],
-        "escalation_weak"
-    );
-    let coding = response
-        .headers()
-        .get("content-encoding")
-        .map(|v| v.to_str().unwrap().to_owned());
-    let bytes = response.bytes().await.unwrap();
-    let text = match coding.as_deref() {
-        Some(coding) => decoded(coding, &bytes),
-        None => String::from_utf8(bytes.to_vec()).unwrap(),
-    };
-    assert!(text.contains("DECODED-WEAK-ANSWER"));
-    assert!(text.contains("event: message_stop"));
-    assert!(text.contains(ROUTER_ID));
-    strong.verify().await;
-    efficient.verify().await;
-    judge.verify().await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers()["x-gateway-route-source"],
+            "escalation_weak"
+        );
+        assert_eq!(response.headers()["content-encoding"], "zstd");
+        let bytes = response.bytes().await.unwrap();
+        let text = decoded("zstd", &bytes);
+        assert!(text.contains("DECODED-WEAK-ANSWER"));
+        if streaming {
+            assert!(text.contains("event: message_stop"));
+        }
+        assert!(text.contains(ROUTER_ID));
+        strong.verify().await;
+        efficient.verify().await;
+        judge.verify().await;
+    }
 }
 
 #[tokio::test]

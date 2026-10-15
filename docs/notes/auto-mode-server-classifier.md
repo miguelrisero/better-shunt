@@ -86,15 +86,21 @@ rewriting, keepalive insertion, safeguard synthesis, metrics, and internal
 routing collectors. `proxy::post` re-encodes a marked client response with the
 upstream's coding and flushes after each plaintext piece. This prevents a
 compressed SSE body from waiting in a plaintext frame accumulator. Internal
-judge and gated calls consume the decoded body. A committed mixed chain relays
-the decoded Anthropic winner in its existing unencoded SSE response.
+judge and gated calls consume the decoded body. Gated replay retains the coding
+marker for client-side encoding. A committed mixed chain relays the decoded
+Anthropic winner in its existing unencoded SSE response. Informational, 204,
+and 304 responses are not decoded or marked; a coded 200 with an empty body
+still fails as truncated input.
 
-The outbound offer retains gzip, deflate, zstd, and identity entries in client
-order with their parameters; unsupported offers are removed. An identity-only
-or unsupported-only offer is omitted. Unsupported or stacked response codings
-stay on the existing passthrough path. Codec steps run under bounded
-blocking-pool admission and emit decoded pieces of at most 16 KiB. A malformed
-or truncated coding body raises a body-stream error. See
+The outbound offer retains gzip, deflate, zstd, identity entries, and `*;q=0`
+exclusions in client order with their parameters. With no supported coding,
+shunt sends an explicit identity offer. If the client excludes identity in
+that case, shunt preserves its original offer for the existing passthrough
+path. Unsupported or stacked response codings stay on that path. Codec steps
+run under bounded blocking-pool admission and emit decoded pieces of at most
+16 KiB. The gzip decoder drains pending inflate output before requesting more
+input, scans optional member headers, and checks the header CRC, body CRC, and
+ISIZE. A malformed or truncated coding body raises a body-stream error. See
 `tests/anthropic_response_coding.rs` and
 `tests/anthropic_response_coding_internal.rs` for gated delivery and routing
 regressions.

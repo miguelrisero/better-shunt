@@ -1,4 +1,7 @@
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Write};
+
+mod gzip;
+use gzip::GzipDecoder;
 
 use bytes::{Buf, Bytes};
 use zstd::stream::raw::Operation;
@@ -20,31 +23,8 @@ struct Input {
     eof: bool,
 }
 
-impl Read for Input {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        let len = self.fill_buf()?.len().min(output.len());
-        output[..len].copy_from_slice(&self.bytes[..len]);
-        self.consume(len);
-        Ok(len)
-    }
-}
-
-impl BufRead for Input {
-    fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        if self.bytes.is_empty() && !self.eof {
-            Err(io::ErrorKind::WouldBlock.into())
-        } else {
-            Ok(&self.bytes)
-        }
-    }
-
-    fn consume(&mut self, len: usize) {
-        self.bytes.advance(len);
-    }
-}
-
 enum DecodeKind {
-    Gzip(Box<flate2::bufread::MultiGzDecoder<Input>>),
+    Gzip(Box<GzipDecoder>),
     Deflate(flate2::Decompress, Input, bool),
     Zstd(zstd::stream::raw::Decoder<'static>, Input, bool),
 }
@@ -54,9 +34,7 @@ pub(super) struct Decoder(DecodeKind);
 impl Decoder {
     pub(super) fn new(coding: UpstreamCoding) -> io::Result<Self> {
         Ok(Self(match coding {
-            UpstreamCoding::Gzip => DecodeKind::Gzip(Box::new(
-                flate2::bufread::MultiGzDecoder::new(Input::default()),
-            )),
+            UpstreamCoding::Gzip => DecodeKind::Gzip(Box::new(GzipDecoder::new())),
             UpstreamCoding::Deflate => {
                 DecodeKind::Deflate(flate2::Decompress::new(true), Input::default(), false)
             }
@@ -68,7 +46,7 @@ impl Decoder {
 
     pub(super) fn feed(&mut self, bytes: Bytes, eof: bool) {
         let input = match &mut self.0 {
-            DecodeKind::Gzip(decoder) => decoder.get_mut(),
+            DecodeKind::Gzip(decoder) => &mut decoder.input,
             DecodeKind::Deflate(_, input, _) | DecodeKind::Zstd(_, input, _) => input,
         };
         input.bytes = bytes;
@@ -78,14 +56,7 @@ impl Decoder {
     pub(super) fn step(&mut self) -> io::Result<Step> {
         let mut output = [0u8; PIECE_BYTES];
         let (read, written, finished, input) = match &mut self.0 {
-            DecodeKind::Gzip(decoder) => {
-                return match decoder.read(&mut output) {
-                    Ok(0) => Ok(Step::Done),
-                    Ok(len) => Ok(Step::Output(Bytes::copy_from_slice(&output[..len]))),
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Step::Input),
-                    Err(error) => Err(error),
-                };
-            }
+            DecodeKind::Gzip(decoder) => return decoder.step(),
             DecodeKind::Deflate(decoder, input, finished) => {
                 if *finished {
                     if !input.bytes.is_empty() {

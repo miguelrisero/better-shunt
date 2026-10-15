@@ -46,9 +46,28 @@ async fn auto_mode_streams_complete_tiny_events_before_the_final_delta_and_trail
             .await;
         assert!(decoder.text.contains("safeguard_results"));
         assert!(decoder.text.contains("dangerous_tool_use"));
-        // Reading through EOF also validates the encoder trailer.
-        while response.chunk().await.unwrap().is_some() {}
+        decoder.complete(&mut response).await;
     }
+}
+
+#[tokio::test]
+async fn large_gzip_piece_delivers_its_small_final_event_before_the_next_piece() {
+    let _env = common::env_lock().await;
+    let (prefix, tail, expected) = gzip_pending_fixture();
+    let complete_end = expected.rfind("\n\n").unwrap() + 2;
+    assert!(complete_end > 16 * 1024);
+    assert!(prefix.len() < 16 * 1024);
+    old_gzip_reader_stops_before_pending_event(&prefix, complete_end);
+    let (upstream, release) = gated_piece(prefix, tail).await;
+    let gateway = gateway(config(upstream.url.clone(), false)).await;
+    let mut response = request(&gateway, "gzip", false, true, true).await;
+    let mut decoder = ClientDecoder::new("gzip");
+    decoder
+        .until(&mut response, |text| text.len() >= complete_end)
+        .await;
+    assert!(decoder.text.starts_with(&expected[..complete_end]));
+    release.send(()).unwrap();
+    decoder.complete(&mut response).await;
 }
 
 #[tokio::test]
@@ -72,7 +91,7 @@ async fn idle_keepalive_is_inside_the_client_coding_stream() {
     decoder
         .until(&mut response, |text| text.contains("event: message_stop"))
         .await;
-    while response.chunk().await.unwrap().is_some() {}
+    decoder.complete(&mut response).await;
 }
 
 #[tokio::test]
@@ -163,8 +182,8 @@ async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
             "gzip, deflate;q=0.5, br, zstd;q=0.7",
             Some("gzip, deflate;q=0.5, zstd;q=0.7"),
         ),
-        ("identity", None),
-        ("br", None),
+        ("identity", Some("identity")),
+        ("br", Some("identity")),
     ] {
         let upstream = MockServer::start().await;
         Mock::given(method("POST"))
@@ -185,6 +204,105 @@ async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
                 .map(|v| v.to_str().unwrap()),
             expected
         );
+    }
+}
+
+#[tokio::test]
+async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
+    let _env = common::env_lock().await;
+    for (offer, expected_offer, expected_coding) in [
+        (Some("gzip"), "gzip", Some("gzip")),
+        (Some("identity"), "identity", None),
+        (Some("br"), "identity", None),
+        (None, "identity", None),
+        (Some("br, identity;q=0"), "br, identity;q=0", Some("br")),
+    ] {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let offer = request
+                    .headers
+                    .get("accept-encoding")
+                    .map(|v| v.to_str().unwrap())
+                    .unwrap_or("");
+                if offer == "identity" {
+                    ResponseTemplate::new(200).set_body_raw("{}", "application/json")
+                } else if offer.contains("br") {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-encoding", "br")
+                        .set_body_raw(b"opaque br bytes".to_vec(), "application/octet-stream")
+                } else {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-encoding", "gzip")
+                        .set_body_raw(compressed("gzip", b"{}"), "application/json")
+                }
+            })
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let gateway = gateway(config(upstream.uri(), false)).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut request = client.post(format!("{}/v1/messages", gateway.url))
+            .json(&json!({"model":"native","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}));
+        if let Some(offer) = offer {
+            request = request.header("accept-encoding", offer);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("content-encoding")
+                .map(|v| v.to_str().unwrap()),
+            expected_coding
+        );
+        let bytes = response.bytes().await.unwrap();
+        match expected_coding {
+            Some("gzip") => assert_eq!(decoded("gzip", &bytes), "{}"),
+            Some("br") => assert_eq!(bytes, "opaque br bytes"),
+            None => assert_eq!(bytes, "{}"),
+            _ => unreachable!(),
+        }
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests[0].headers["accept-encoding"], expected_offer);
+    }
+}
+
+#[tokio::test]
+async fn alias_route_preserves_coded_bodyless_status() {
+    let _env = common::env_lock().await;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(204).insert_header("content-encoding", "gzip"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = gateway(config(upstream.uri(), true)).await;
+    let response = request(&gateway, "gzip", true, false, false).await;
+    assert_eq!(response.status(), 204);
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    assert!(response.bytes().await.unwrap().is_empty());
+}
+
+#[test]
+fn client_decoder_rejects_truncated_and_corrupt_footers() {
+    for coding in ["gzip", "deflate", "zstd"] {
+        let bytes = compressed(coding, START.as_bytes());
+        let mut valid = ClientDecoder::new(coding);
+        valid.push(&bytes).unwrap();
+        valid.finish().unwrap();
+        let mut truncated = ClientDecoder::new(coding);
+        let result = truncated
+            .push(&bytes[..bytes.len() - 1])
+            .and_then(|()| truncated.finish());
+        assert!(result.is_err(), "truncated footer: {coding}");
+        if coding != "zstd" {
+            let mut bytes = bytes;
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            let mut corrupt = ClientDecoder::new(coding);
+            let result = corrupt.push(&bytes).and_then(|()| corrupt.finish());
+            assert!(result.is_err(), "corrupt footer: {coding}");
+        }
     }
 }
 

@@ -6,6 +6,8 @@ use futures_util::TryStreamExt;
 
 use super::*;
 
+mod gzip;
+
 fn compressed(coding: UpstreamCoding, bytes: &[u8]) -> Bytes {
     let mut encoder = Encoder::new(coding).unwrap();
     let mut out = encoder.push(bytes).unwrap().to_vec();
@@ -112,6 +114,37 @@ async fn byte_split_flushed_prefix_is_decoded_before_the_tail() {
 }
 
 #[tokio::test]
+async fn gzip_drains_a_large_prefix_before_requesting_more_input() {
+    let expected = format!(
+        "event: large\ndata: {}\n\nevent: small\ndata: {{}}\n\n",
+        "x".repeat(48 * 1024)
+    );
+    let mut encoder = Encoder::new(UpstreamCoding::Gzip).unwrap();
+    let prefix = encoder.push(expected.as_bytes()).unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let input = stream::iter([Ok::<_, Infallible>(prefix)]).chain(stream::once(async move {
+        let _ = released.await;
+        Ok(encoder.finish().unwrap())
+    }));
+    let output = decode(input, UpstreamCoding::Gzip);
+    futures_util::pin_mut!(output);
+    let received = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut received = Vec::new();
+        while received.len() < expected.len() {
+            let chunk = output.next().await.unwrap().unwrap();
+            assert!(chunk.len() <= PIECE_BYTES);
+            received.extend_from_slice(&chunk);
+        }
+        received
+    })
+    .await
+    .expect("pending gzip output must not wait for the trailer");
+    assert_eq!(received, expected.as_bytes());
+    release.send(()).unwrap();
+    collected(output).await.unwrap();
+}
+
+#[tokio::test]
 async fn expansion_emits_bounded_pieces() {
     let expected = vec![b'x'; 4 * 1024 * 1024];
     for coding in [
@@ -203,8 +236,49 @@ fn accept_encoding_keeps_order_and_quality_values() {
     for value in ["identity", "br", "unknown, br", "*"] {
         headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
         filter_accept_encoding(&mut headers);
-        assert!(!headers.contains_key(header::ACCEPT_ENCODING));
+        assert_eq!(headers[header::ACCEPT_ENCODING], "identity");
     }
+    for value in ["br, identity;q=0", "br, *;q=0", "identity;q=0", "*;q=0"] {
+        headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
+        filter_accept_encoding(&mut headers);
+        assert_eq!(headers[header::ACCEPT_ENCODING], value);
+    }
+    headers.insert(
+        header::ACCEPT_ENCODING,
+        HeaderValue::from_static("gzip, br, *;q=0"),
+    );
+    filter_accept_encoding(&mut headers);
+    assert_eq!(headers[header::ACCEPT_ENCODING], "gzip, *;q=0");
+    headers.insert(
+        header::ACCEPT_ENCODING,
+        HeaderValue::from_static("br, *;q=0, identity;q=1"),
+    );
+    filter_accept_encoding(&mut headers);
+    assert_eq!(headers[header::ACCEPT_ENCODING], "identity");
+    headers.remove(header::ACCEPT_ENCODING);
+    filter_accept_encoding(&mut headers);
+    assert_eq!(headers[header::ACCEPT_ENCODING], "identity");
+}
+
+#[tokio::test]
+async fn bodyless_statuses_stay_unmarked_but_empty_success_is_truncated() {
+    for status in [100, 103, 204, 304] {
+        let response = Response::builder()
+            .status(status)
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(reqwest::Body::from(Vec::new()))
+            .unwrap();
+        let response = normalize(response.into());
+        assert!(response.extensions().get::<UpstreamCoding>().is_none());
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        assert!(response.bytes().await.unwrap().is_empty());
+    }
+    let response = Response::builder()
+        .status(200)
+        .header(header::CONTENT_ENCODING, "gzip")
+        .body(reqwest::Body::from(Vec::new()))
+        .unwrap();
+    assert!(normalize(response.into()).bytes().await.is_err());
 }
 
 #[tokio::test]
