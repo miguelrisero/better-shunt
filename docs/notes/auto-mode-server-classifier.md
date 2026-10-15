@@ -75,12 +75,29 @@ message for that case, not from a documented contract.
 
 ## What shunt does
 
-**First-party passthrough.** shunt's Anthropic adapter already forwards the
-header, the body and the upstream's SSE bytes unchanged for `api.anthropic.com`
-routes; `safeguard_results` arrives verbatim (verified live on
-`claude-sonnet-4-6` and `claude-fable-5-1`) **[live]**. Nothing in this change
-touches that path — a response that already carries the field is never
-re-serialized.
+**First-party verdicts.** The Anthropic adapter forwards the request's
+safeguard field and beta to `api.anthropic.com`. Verdicts arrived on
+`claude-sonnet-4-6` and `claude-fable-5-1` **[live]**. The response synthesis
+pass leaves a present `safeguard_results` unchanged.
+
+**Response coding.** `response_coding::normalize` incrementally decodes native
+Anthropic gzip, zlib-wrapped deflate, and zstd responses before model alias
+rewriting, keepalive insertion, safeguard synthesis, metrics, and internal
+routing collectors. `proxy::post` re-encodes a marked client response with the
+upstream's coding and flushes after each plaintext piece. This prevents a
+compressed SSE body from waiting in a plaintext frame accumulator. Internal
+judge and gated calls consume the decoded body. A committed mixed chain relays
+the decoded Anthropic winner in its existing unencoded SSE response.
+
+The outbound offer retains gzip, deflate, zstd, and identity entries in client
+order with their parameters; unsupported offers are removed. An identity-only
+or unsupported-only offer is omitted. Unsupported or stacked response codings
+stay on the existing passthrough path. Codec steps run under bounded
+blocking-pool admission and emit decoded pieces of at most 16 KiB. A malformed
+or truncated coding body raises a body-stream error. See
+`tests/anthropic_response_coding.rs` and
+`tests/anthropic_response_coding_internal.rs` for gated delivery and routing
+regressions.
 
 **Synthesis elsewhere** (`src/proxy/safeguards.rs`). A route served by a
 translation adapter (Responses/Codex, Cursor, Gemini, Antigravity) builds its own
