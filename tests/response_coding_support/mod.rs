@@ -27,13 +27,13 @@ pub fn gzip_pending_fixture() -> (Vec<u8>, Vec<u8>, String) {
             TINY.repeat(500)
         );
         let bytes = compressed("gzip", text.as_bytes());
-        let mut inflate = flate2::Decompress::new(false);
+        let mut inflate = flate2::Decompress::new_gzip(15);
         let mut first = [0; 16 * 1024];
         inflate
-            .decompress(&bytes[10..], &mut first, flate2::FlushDecompress::None)
+            .decompress(&bytes, &mut first, flate2::FlushDecompress::None)
             .unwrap();
         assert_eq!(inflate.total_out(), first.len() as u64);
-        let split = 10 + inflate.total_in() as usize;
+        let split = inflate.total_in() as usize;
         let mut pending = [0; 16 * 1024];
         inflate
             .decompress(&[], &mut pending, flate2::FlushDecompress::None)
@@ -55,45 +55,37 @@ pub fn gzip_pending_fixture() -> (Vec<u8>, Vec<u8>, String) {
     panic!("fixture must leave a complete event in inflate's pending output");
 }
 
-pub fn old_gzip_reader_stops_before_pending_event(prefix: &[u8], complete_end: usize) {
-    struct TemporaryInput<'a>(&'a [u8]);
-    impl Read for TemporaryInput<'_> {
-        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-            let len = std::io::BufRead::fill_buf(self)?.len().min(output.len());
-            output[..len].copy_from_slice(&self.0[..len]);
-            std::io::BufRead::consume(self, len);
-            Ok(len)
-        }
-    }
-    impl std::io::BufRead for TemporaryInput<'_> {
-        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-            if self.0.is_empty() {
-                Err(std::io::ErrorKind::WouldBlock.into())
-            } else {
-                Ok(self.0)
-            }
-        }
-        fn consume(&mut self, len: usize) {
-            self.0 = &self.0[len..];
-        }
-    }
-    let mut decoder = flate2::bufread::MultiGzDecoder::new(TemporaryInput(prefix));
-    let mut output = [0; 16 * 1024];
-    let mut received = 0;
+pub fn assert_gzip_prefix_contains_pending_event(prefix: &[u8], expected: &str) {
+    let mut decoder = flate2::Decompress::new_gzip(15);
+    let mut plaintext = Vec::new();
+    let mut offset = 0;
     loop {
-        match decoder.read(&mut output) {
-            Ok(0) => panic!("the old reader must wait for transport input"),
-            Ok(len) => received += len,
-            Err(error) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
-                assert!(
-                    received < complete_end,
-                    "old reader unexpectedly drained the event"
-                );
-                break;
-            }
+        let mut output = [0; 16 * 1024];
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        decoder
+            .decompress(
+                &prefix[offset..],
+                &mut output,
+                flate2::FlushDecompress::None,
+            )
+            .unwrap();
+        let read = (decoder.total_in() - before_in) as usize;
+        let written = (decoder.total_out() - before_out) as usize;
+        offset += read;
+        plaintext.extend_from_slice(&output[..written]);
+        if read == 0 && written == 0 {
+            break;
         }
     }
+    assert_eq!(offset, prefix.len());
+    assert_eq!(plaintext, expected.as_bytes());
+    let complete_end = plaintext
+        .windows(2)
+        .rposition(|bytes| bytes == b"\n\n")
+        .unwrap()
+        + 2;
+    assert!(complete_end > 16 * 1024);
 }
 
 pub async fn gated_piece(prefix: Vec<u8>, tail: Vec<u8>) -> (Server, oneshot::Sender<()>) {

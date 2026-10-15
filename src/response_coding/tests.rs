@@ -190,6 +190,66 @@ async fn upstream_body_errors_propagate() {
     assert!(error.to_string().contains("upstream body failed"));
 }
 
+#[test]
+fn decoder_driver_coalesces_consecutive_again_transitions() {
+    for ready in [
+        Step::Input,
+        Step::Done,
+        Step::Output(Bytes::from_static(b"ready")),
+    ] {
+        let mut steps = vec![Step::Again, Step::Again, Step::Again, ready].into_iter();
+        let mut calls = 0;
+        let result = codec::drain_transitions(|| {
+            calls += 1;
+            Ok(steps.next().expect("driver must stop at the ready step"))
+        })
+        .unwrap();
+        assert!(!matches!(result, Step::Again));
+        assert_eq!(calls, 4);
+    }
+    let mut calls = 0;
+    let result = codec::drain_transitions(|| {
+        calls += 1;
+        if calls < 4 {
+            Ok(Step::Again)
+        } else {
+            Err(io::Error::other("codec failed"))
+        }
+    });
+    assert_eq!(result.err().unwrap().to_string(), "codec failed");
+    assert_eq!(calls, 4);
+}
+
+#[tokio::test]
+async fn decoding_errors_end_the_stream_without_repolling_upstream() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    for transport_error in [true, false] {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let input = stream::poll_fn(move |_| {
+            assert_eq!(observed.fetch_add(1, Ordering::SeqCst), 0);
+            std::task::Poll::Ready(Some(if transport_error {
+                Err(io::Error::other("transport failed"))
+            } else {
+                Ok(Bytes::from_static(b"invalid gzip data"))
+            }))
+        });
+        let output = decode(input, UpstreamCoding::Gzip);
+        futures_util::pin_mut!(output);
+        let error = output.next().await.unwrap().unwrap_err();
+        if transport_error {
+            assert!(error.to_string().contains("transport failed"));
+        }
+        assert!(output.next().await.is_none());
+        assert!(output.next().await.is_none());
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+    }
+}
+
 #[tokio::test]
 async fn unsupported_stacked_and_repeated_codings_are_passthrough() {
     for values in [
@@ -233,12 +293,28 @@ fn accept_encoding_keeps_order_and_quality_values() {
     );
     filter_accept_encoding(&mut headers);
     assert_eq!(headers[header::ACCEPT_ENCODING], "identity;q=0, gzip;q=0.5");
-    for value in ["identity", "br", "unknown, br", "*"] {
+    headers.insert(
+        header::ACCEPT_ENCODING,
+        HeaderValue::from_static("gzip;q=0, zstd;q=0.7, deflate;q=0, GZIP;q=1"),
+    );
+    filter_accept_encoding(&mut headers);
+    assert_eq!(
+        headers[header::ACCEPT_ENCODING],
+        "gzip;q=0, zstd;q=0.7, deflate;q=0, GZIP;q=1"
+    );
+    for value in ["identity", "br", "unknown, br", "*", "gzip;q=0"] {
         headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
         filter_accept_encoding(&mut headers);
         assert_eq!(headers[header::ACCEPT_ENCODING], "identity");
     }
-    for value in ["br, identity;q=0", "br, *;q=0", "identity;q=0", "*;q=0"] {
+    for value in [
+        "br, identity;q=0",
+        "br, *;q=0",
+        "br, gzip;q=0, identity;q=0",
+        "br, gzip;q=0, *;q=0",
+        "identity;q=0",
+        "*;q=0",
+    ] {
         headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
         filter_accept_encoding(&mut headers);
         assert_eq!(headers[header::ACCEPT_ENCODING], value);

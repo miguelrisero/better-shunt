@@ -1085,8 +1085,6 @@ async fn relay_response(
     // outbound, and the upstream — possibly several hops away — reports its own
     // model id back in `message_start` / the JSON body. Without this the raw id
     // leaks to Claude Code and breaks `--resume` model restoration (issue #172).
-    // When alias == upstream_model there is nothing to restore: `None` keeps the
-    // body byte-for-byte, preserving passthrough for api.anthropic.com routes.
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
 
     let mut builder = Response::builder().status(status);

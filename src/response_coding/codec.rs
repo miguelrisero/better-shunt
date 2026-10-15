@@ -1,8 +1,5 @@
 use std::io::{self, Write};
 
-mod gzip;
-use gzip::GzipDecoder;
-
 use bytes::{Buf, Bytes};
 use zstd::stream::raw::Operation;
 
@@ -17,6 +14,15 @@ pub(super) enum Step {
     Done,
 }
 
+pub(super) fn drain_transitions(mut step: impl FnMut() -> io::Result<Step>) -> io::Result<Step> {
+    loop {
+        match step()? {
+            Step::Again => continue,
+            ready => return Ok(ready),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Input {
     bytes: Bytes,
@@ -24,7 +30,7 @@ struct Input {
 }
 
 enum DecodeKind {
-    Gzip(Box<GzipDecoder>),
+    Gzip(flate2::Decompress, Input, bool),
     Deflate(flate2::Decompress, Input, bool),
     Zstd(zstd::stream::raw::Decoder<'static>, Input, bool),
 }
@@ -34,7 +40,9 @@ pub(super) struct Decoder(DecodeKind);
 impl Decoder {
     pub(super) fn new(coding: UpstreamCoding) -> io::Result<Self> {
         Ok(Self(match coding {
-            UpstreamCoding::Gzip => DecodeKind::Gzip(Box::new(GzipDecoder::new())),
+            UpstreamCoding::Gzip => {
+                DecodeKind::Gzip(flate2::Decompress::new_gzip(15), Input::default(), false)
+            }
             UpstreamCoding::Deflate => {
                 DecodeKind::Deflate(flate2::Decompress::new(true), Input::default(), false)
             }
@@ -46,8 +54,9 @@ impl Decoder {
 
     pub(super) fn feed(&mut self, bytes: Bytes, eof: bool) {
         let input = match &mut self.0 {
-            DecodeKind::Gzip(decoder) => &mut decoder.input,
-            DecodeKind::Deflate(_, input, _) | DecodeKind::Zstd(_, input, _) => input,
+            DecodeKind::Gzip(_, input, _)
+            | DecodeKind::Deflate(_, input, _)
+            | DecodeKind::Zstd(_, input, _) => input,
         };
         input.bytes = bytes;
         input.eof = eof;
@@ -55,17 +64,23 @@ impl Decoder {
 
     pub(super) fn step(&mut self) -> io::Result<Step> {
         let mut output = [0u8; PIECE_BYTES];
+        let is_gzip = matches!(&self.0, DecodeKind::Gzip(..));
         let (read, written, finished, input) = match &mut self.0 {
-            DecodeKind::Gzip(decoder) => return decoder.step(),
-            DecodeKind::Deflate(decoder, input, finished) => {
+            DecodeKind::Gzip(decoder, input, finished)
+            | DecodeKind::Deflate(decoder, input, finished) => {
                 if *finished {
-                    if !input.bytes.is_empty() {
+                    if input.bytes.is_empty() {
+                        return Ok(if input.eof { Step::Done } else { Step::Input });
+                    }
+                    if is_gzip {
+                        *decoder = flate2::Decompress::new_gzip(15);
+                        *finished = false;
+                    } else {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "trailing deflate data",
                         ));
                     }
-                    return Ok(if input.eof { Step::Done } else { Step::Input });
                 }
                 let before_in = decoder.total_in();
                 let before_out = decoder.total_out();
@@ -129,7 +144,10 @@ impl Encoder {
                 Vec::new(),
                 flate2::Compression::default(),
             )),
-            UpstreamCoding::Zstd => Self::Zstd(zstd::stream::write::Encoder::new(Vec::new(), 3)?),
+            UpstreamCoding::Zstd => Self::Zstd(zstd::stream::write::Encoder::new(
+                Vec::new(),
+                zstd::DEFAULT_COMPRESSION_LEVEL,
+            )?),
         })
     }
 

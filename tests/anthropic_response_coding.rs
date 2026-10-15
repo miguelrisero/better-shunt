@@ -57,7 +57,7 @@ async fn large_gzip_piece_delivers_its_small_final_event_before_the_next_piece()
     let complete_end = expected.rfind("\n\n").unwrap() + 2;
     assert!(complete_end > 16 * 1024);
     assert!(prefix.len() < 16 * 1024);
-    old_gzip_reader_stops_before_pending_event(&prefix, complete_end);
+    assert_gzip_prefix_contains_pending_event(&prefix, &expected);
     let (upstream, release) = gated_piece(prefix, tail).await;
     let gateway = gateway(config(upstream.url.clone(), false)).await;
     let mut response = request(&gateway, "gzip", false, true, true).await;
@@ -216,6 +216,16 @@ async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
         (Some("br"), "identity", None),
         (None, "identity", None),
         (Some("br, identity;q=0"), "br, identity;q=0", Some("br")),
+        (
+            Some("br, gzip;q=0, identity;q=0"),
+            "br, gzip;q=0, identity;q=0",
+            Some("br"),
+        ),
+        (
+            Some("br, gzip;q=0, *;q=0"),
+            "br, gzip;q=0, *;q=0",
+            Some("br"),
+        ),
     ] {
         let upstream = MockServer::start().await;
         Mock::given(method("POST"))

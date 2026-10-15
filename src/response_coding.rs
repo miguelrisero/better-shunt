@@ -44,6 +44,7 @@ impl UpstreamCoding {
 pub(crate) fn filter_accept_encoding(headers: &mut HeaderMap) {
     let mut identity = None;
     let mut wildcard_excludes_identity = false;
+    let mut has_coding = false;
     let mut offers = Vec::new();
     for offer in headers
         .get_all(header::ACCEPT_ENCODING)
@@ -59,22 +60,18 @@ pub(crate) fn filter_accept_encoding(headers: &mut HeaderMap) {
             .find(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
             .and_then(|(_, value)| value.trim().parse::<f32>().ok())
             .unwrap_or(1.0);
-        if token.eq_ignore_ascii_case("identity") {
+        let supported = UpstreamCoding::parse(token).is_some();
+        let is_identity = token.eq_ignore_ascii_case("identity");
+        let wildcard_exclusion = token == "*" && quality == 0.0;
+        has_coding |= supported && quality > 0.0;
+        if is_identity {
             identity = Some(quality > 0.0);
         }
-        if token == "*" && quality == 0.0 {
-            wildcard_excludes_identity = true;
-        }
-        if UpstreamCoding::parse(token).is_some()
-            || token.eq_ignore_ascii_case("identity")
-            || token == "*" && quality == 0.0
-        {
+        wildcard_excludes_identity |= wildcard_exclusion;
+        if supported || is_identity || wildcard_exclusion {
             offers.push(offer.to_owned());
         }
     }
-    let has_coding = offers
-        .iter()
-        .any(|offer| UpstreamCoding::parse(offer.split(';').next().unwrap_or_default()).is_some());
     if !has_coding && !identity.unwrap_or(!wildcard_excludes_identity) {
         // Preserve the original offer for the unsupported-coding passthrough path.
         return;
@@ -165,55 +162,38 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     let input = Box::pin(input.map(|item| item.map_err(io::Error::other)));
-    let state = (input, None::<Decoder>, Bytes::new(), false, false);
-    stream::unfold(
+    let state = (input, None::<Decoder>, Bytes::new(), false);
+    stream::try_unfold(
         state,
-        move |(mut input, decoder, mut pending, mut eof, done)| async move {
-            if done {
-                return None;
-            }
-            let result = async {
-                let mut decoder = match decoder {
-                    Some(decoder) => decoder,
-                    None => {
-                        crate::offload::spawn_bounded(decode_slots(), move || Decoder::new(coding))
-                            .await??
+        move |(mut input, mut decoder, mut pending, mut eof)| async move {
+            loop {
+                let (mut next, step) = crate::offload::spawn_bounded(decode_slots(), move || {
+                    let mut decoder = match decoder {
+                        Some(decoder) => decoder,
+                        None => Decoder::new(coding)?,
+                    };
+                    let step = codec::drain_transitions(|| decoder.step())?;
+                    Ok::<_, io::Error>((decoder, step))
+                })
+                .await??;
+                match step {
+                    Step::Output(bytes) => {
+                        return Ok(Some((bytes, (input, Some(next), pending, eof))));
                     }
-                };
-                loop {
-                    // Expansion is not bounded by compressed chunk size. Offload a
-                    // fixed-output step under admission, as in compression::decode_zstd_within;
-                    // retain the codec between steps instead of rebuilding it per SSE event.
-                    let (next, step) = crate::offload::spawn_bounded(decode_slots(), move || {
-                        let step = decoder.step();
-                        (decoder, step)
-                    })
-                    .await?;
-                    decoder = next;
-                    match step? {
-                        Step::Output(bytes) => return Ok(Some((bytes, decoder))),
-                        Step::Done => return Ok(None),
-                        Step::Again => continue,
-                        Step::Input => {
-                            if pending.is_empty() && !eof {
-                                match input.next().await {
-                                    Some(chunk) => pending = chunk?,
-                                    None => eof = true,
-                                }
+                    Step::Done => return Ok(None),
+                    Step::Again => unreachable!("drain_transitions consumes Again steps"),
+                    Step::Input => {
+                        if pending.is_empty() && !eof {
+                            match input.next().await {
+                                Some(chunk) => pending = chunk?,
+                                None => eof = true,
                             }
-                            let len = pending.len().min(PIECE_BYTES);
-                            decoder.feed(pending.split_to(len), eof);
                         }
+                        let len = pending.len().min(PIECE_BYTES);
+                        next.feed(pending.split_to(len), eof);
+                        decoder = Some(next);
                     }
                 }
-            }
-            .await;
-            match result {
-                Ok(Some((bytes, decoder))) => {
-                    Some((Ok(bytes), (input, Some(decoder), pending, eof, false)))
-                }
-                Ok(None) => None,
-                Err(error) => Some((Err(error), (input, None, pending, eof, true))),
             }
         },
     )
