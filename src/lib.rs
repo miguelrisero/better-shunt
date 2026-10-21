@@ -10,6 +10,7 @@ pub mod auth;
 #[doc(hidden)]
 pub mod bench_support;
 pub mod blueprints;
+pub mod client_attribution;
 pub mod codex_analytics;
 pub mod codex_endpoint;
 pub(crate) mod compression;
@@ -40,6 +41,7 @@ pub mod routing;
 pub mod server;
 pub mod state_persist;
 pub mod status_poll;
+pub mod store;
 pub mod stream_metrics;
 pub mod telemetry;
 pub mod upstream_status;

@@ -64,6 +64,9 @@ pub struct AppState {
     /// [`AppState::prefill_routers`]: a reload rebuilds them, and with them
     /// the session state libsy keeps inside each algorithm.
     pub(crate) driven_routers: Arc<crate::routing::driven::DrivenRouters>,
+    /// The spend meter's rate table for this request's config snapshot, read
+    /// off `current` like [`AppState::config`] so a reload re-prices.
+    pub(crate) spend_prices: Arc<crate::gateway::spend::pricing::PriceTable>,
     /// Process-lifetime JWKS cache for `[[server.auth.jwt]]` issuers. Kept here
     /// rather than on `inbound_auth` so a reload that re-resolves the entries
     /// does not throw away keys it would immediately refetch — and so a
@@ -131,6 +134,7 @@ impl AppState {
             gateway_auth: current.gateway_auth.clone(),
             prefill_routers: current.prefill_routers.clone(),
             driven_routers: current.driven_routers.clone(),
+            spend_prices: current.spend_prices.clone(),
             http_client,
             accounts,
             status,
@@ -316,6 +320,11 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
                 get(codex_endpoint::websocket::get).post(codex_endpoint::post),
             );
         }
+        // The Codex CLI's web-search tool posts to `{base_url}/alpha/search`.
+        // POST only: unlike a Responses turn there is no WebSocket form of it.
+        for path in codex_endpoint::search::PATHS {
+            router = router.route(path, post(codex_endpoint::search::post));
+        }
         for path in codex_analytics::PATHS {
             router = router.route(path, post(codex_analytics::post));
         }
@@ -392,6 +401,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use axum::{
         body::{Body, HttpBody},
@@ -477,6 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_route_is_registered_and_answers_when_enabled_with_valid_auth() {
+        let _env_lock = crate::config::test_env_lock();
         let (config, env) = config_with_usage_enabled("registered");
         let (router, _shared, _state) = build_router(config).unwrap();
 

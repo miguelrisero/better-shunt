@@ -39,7 +39,7 @@ use crate::{
 };
 
 use super::failover::{headers_for_route, InboundContext};
-use super::ForwardError;
+use super::{spend_gate::ServedTarget, ForwardError};
 use crate::adapters::responses::spawn_terminal_drain;
 
 /// Whether this request is one this module drives: more than one upstream, a
@@ -305,9 +305,11 @@ fn is_terminal_frame(frame: &[u8]) -> bool {
 /// already name the winner, not the failed primary. The pending build
 /// resolves only the machine and the synthetic start; the keepalive wrapper
 /// covers the wait.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_winner(
     provider: &str,
     model: &str,
+    attribution: crate::client_attribution::ClientAttribution,
     header_latency_ms: f64,
     request_span: &tracing::Span,
     winner_slot: &std::sync::Arc<std::sync::Mutex<String>>,
@@ -317,6 +319,7 @@ async fn resolve_winner(
     crate::metrics::record_proxied_request(
         provider,
         model,
+        attribution,
         StatusCode::OK.as_u16(),
         header_latency_ms,
     );
@@ -364,6 +367,9 @@ pub(super) struct ChainStreamRequest {
     /// when that turn is replayed, and the winner it needs travels on the
     /// response as a [`ChainStreamWinner`] extension instead.
     pub(super) observe_stream: bool,
+    /// The served-response spend hook, pointed at the winner when one is
+    /// selected. Used only when `observe_stream` is set.
+    pub(super) spend: Option<stream_metrics::SpendTap>,
 }
 
 /// Which upstream won an unobserved committed stream, filled in as the stream
@@ -372,6 +378,12 @@ pub(super) struct ChainStreamRequest {
 pub(crate) struct ChainStreamWinner {
     provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: std::sync::Arc<std::sync::Mutex<String>>,
+    /// The model string the winning route was sent: what a captured turn is
+    /// priced on. The first route's effective model until a route wins.
+    upstream_model: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Whether the winning route is metered ([`ServedTarget::meters`]); the
+    /// first route's until a route wins.
+    meters: std::sync::Arc<std::sync::atomic::AtomicBool>,
     refusal: RefusalSlot,
 }
 
@@ -429,6 +441,22 @@ impl ChainStreamWinner {
         (read(&self.provider), read(&self.model))
     }
 
+    /// What the winning route's usage is priced on, as of now; the first
+    /// route's until a route wins.
+    pub(crate) fn served(&self) -> ServedTarget {
+        let (provider, model) = self.get();
+        ServedTarget {
+            provider,
+            model,
+            upstream_model: self
+                .upstream_model
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            meters: self.meters.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     /// The chain's refusal when no route produced a stream, as of now.
     ///
     /// Set when the chain ran out or an attempt failed terminally before its
@@ -459,17 +487,22 @@ pub(super) async fn forward_chain_stream(
         started_at,
         router_stamp,
         observe_stream,
+        spend,
     } = request;
     // Read before the body moves into the chain: the committed stream's
     // `message_delta` carries the auto-mode classifier's answer, which only a
     // first-party relay produces (see `crate::proxy::safeguards`).
     let requested_safeguards = crate::proxy::safeguards::requested_types(body.json());
+    // The same: every sample this committed chain takes — each attempt's and
+    // the stream observer's — carries the turn's attribution.
+    let attribution = body.attribution();
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     let first_route = routes
         .first()
         .expect("route chains are non-empty after resolution");
     let first_provider = first_route.provider.clone();
     let first_model = first_route.model.clone();
+    let first_target = ServedTarget::of(&state, first_route, body.json());
     // Captured synchronously inside the caller's `.instrument(span)` future,
     // so the eventual in-stream outcome records land on the request's own
     // span rather than whatever span is current while the body is polled.
@@ -514,8 +547,15 @@ pub(super) async fn forward_chain_stream(
     let closure_slot = winner_slot.clone();
     let winner_model_slot = std::sync::Arc::new(std::sync::Mutex::new(first_model.clone()));
     let closure_model_slot = winner_model_slot.clone();
+    let winner_upstream_slot =
+        std::sync::Arc::new(std::sync::Mutex::new(first_target.upstream_model));
+    let closure_upstream_slot = winner_upstream_slot.clone();
+    let winner_meters_slot =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(first_target.meters));
+    let closure_meters_slot = winner_meters_slot.clone();
     let refusal_slot = RefusalSlot::default();
     let closure_refusal = refusal_slot.clone();
+    let closure_spend = spend.clone();
     // One chain, one token estimate: the first opted-in attempt starts the
     // bounded blocking encode and later opted-in attempts reuse the same
     // compute (see `ChainEstimate`) instead of re-tokenizing the identical
@@ -547,6 +587,9 @@ pub(super) async fn forward_chain_stream(
             let winner_slot = closure_slot.clone();
             let winner_model_slot = closure_model_slot.clone();
             let refusal_slot = closure_refusal.clone();
+            let spend = closure_spend.clone();
+            let winner_upstream_slot = closure_upstream_slot.clone();
+            let winner_meters_slot = closure_meters_slot.clone();
             let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
@@ -733,6 +776,7 @@ pub(super) async fn forward_chain_stream(
                                     .expect("attempt phase holds the request body")
                                     .clone()
                             };
+                            let target = ServedTarget::of(&state, &route, attempt_body.json());
                             let provider = route.provider.clone();
                             let model = route.model.clone();
                             let outcome = match route.adapter {
@@ -760,9 +804,25 @@ pub(super) async fn forward_chain_stream(
                             };
                             match outcome {
                                 Attempt::Winner { headers_at, relay } => {
+                                    // Priced on the winner, not the routed
+                                    // primary: its usage is what the relay
+                                    // carries.
+                                    // A passthrough winner is paid with the
+                                    // caller's own credential: not billed.
+                                    if let Some(tap) = &spend {
+                                        tap.set_target(&target);
+                                    }
+                                    winner_meters_slot
+                                        .store(target.meters, std::sync::atomic::Ordering::Relaxed);
+                                    target.upstream_model.clone_into(
+                                        &mut winner_upstream_slot
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                    );
                                     let (start, frames) = resolve_winner(
                                         &provider,
                                         &model,
+                                        attribution,
                                         headers_at
                                             .saturating_duration_since(attempt_started)
                                             .as_secs_f64()
@@ -804,6 +864,7 @@ pub(super) async fn forward_chain_stream(
                                     crate::metrics::record_proxied_request(
                                         &provider,
                                         &model,
+                                        attribution,
                                         status.as_u16(),
                                         attempt_started.elapsed().as_secs_f64() * 1000.0,
                                     );
@@ -913,18 +974,22 @@ pub(super) async fn forward_chain_stream(
         crate::proxy::safeguards::synthesize(response, &requested_safeguards, max_request_bytes)
             .await;
     let mut response = if observe_stream {
-        stream_metrics::observe_response_with_slot(
+        stream_metrics::observe_served(
             response,
             Protocol::Anthropic,
             winner_slot,
             winner_model_slot,
+            attribution,
             started_at,
+            spend,
         )
     } else {
         let mut response = response;
         response.extensions_mut().insert(ChainStreamWinner {
             provider: winner_slot,
             model: winner_model_slot,
+            upstream_model: winner_upstream_slot,
+            meters: winner_meters_slot,
             refusal: refusal_slot,
         });
         response
@@ -1313,6 +1378,7 @@ mod tests {
             let mut resolution = Box::pin(super::resolve_winner(
                 &provider,
                 &model,
+                crate::client_attribution::ClientAttribution::UNATTRIBUTED,
                 0.0,
                 &span,
                 &provider_slot,

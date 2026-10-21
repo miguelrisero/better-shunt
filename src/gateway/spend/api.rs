@@ -212,7 +212,16 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
             );
         }
     };
-    let _gate = state.gateway_stores.spend.mutation_gate().await;
+    let gate = state.gateway_stores.spend.mutation_gate().await;
+    if let Err(message) = super::persist::resync_if_needed(&state).await {
+        tracing::error!(%message);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
+            "failed to persist spend limit",
+            request_id,
+        );
+    }
     let snapshot = state.gateway_stores.spend.export();
     let (next, limit) = super::store::SpendStore::upsert_state(
         snapshot.clone(),
@@ -225,7 +234,7 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
     if next == snapshot {
         return success(StatusCode::OK, &limit, request_id);
     }
-    if let Err(message) = super::persist::save(&state, &next).await {
+    if let Err(message) = super::persist::commit(&state, gate, next).await {
         tracing::error!(%message);
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -234,7 +243,6 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
             request_id,
         );
     }
-    state.gateway_stores.spend.replace(next);
     success(StatusCode::OK, &limit, request_id)
 }
 
@@ -265,14 +273,23 @@ pub async fn delete_by_id(
         Ok(actor) => actor,
         Err(response) => return *response,
     };
-    let _gate = state.gateway_stores.spend.mutation_gate().await;
+    let gate = state.gateway_stores.spend.mutation_gate().await;
+    if let Err(message) = super::persist::resync_if_needed(&state).await {
+        tracing::error!(%message);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
+            "failed to persist spend limit",
+            request_id,
+        );
+    }
     let snapshot = state.gateway_stores.spend.export();
     let Some((next, _)) =
         super::store::SpendStore::delete_state(snapshot, &id, &actor, timestamp())
     else {
         return not_found(&id, request_id);
     };
-    if let Err(message) = super::persist::save(&state, &next).await {
+    if let Err(message) = super::persist::commit(&state, gate, next).await {
         tracing::error!(%message);
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -281,7 +298,6 @@ pub async fn delete_by_id(
             request_id,
         );
     }
-    state.gateway_stores.spend.replace(next);
     success(
         StatusCode::OK,
         &DeletedResponse {
@@ -310,7 +326,7 @@ pub async fn method_not_allowed() -> Response {
 /// its privilege is the maximum over every set it matched. `required_access` is
 /// enforced as a comparison — `write` implies `read` — rather than an equality
 /// test, so a write credential passes a read route.
-fn authenticate(
+pub(super) fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
     required_access: AdminAccess,
@@ -429,7 +445,7 @@ fn not_found(id: &str, request_id: String) -> Response {
     )
 }
 
-fn success<T: Serialize>(status: StatusCode, value: &T, request_id: String) -> Response {
+pub(super) fn success<T: Serialize>(status: StatusCode, value: &T, request_id: String) -> Response {
     let mut response = (status, Json(value)).into_response();
     response.headers_mut().insert(
         "request-id",
@@ -438,7 +454,7 @@ fn success<T: Serialize>(status: StatusCode, value: &T, request_id: String) -> R
     response
 }
 
-fn error(
+pub(super) fn error(
     status: StatusCode,
     error_type: &'static str,
     message: impl Into<String>,
@@ -455,7 +471,7 @@ fn error(
     success(status, &body, request_id)
 }
 
-fn request_id() -> String {
+pub(super) fn request_id() -> String {
     format!("req_{}", crate::admin::session::random_id())
 }
 
