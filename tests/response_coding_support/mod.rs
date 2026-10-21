@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures_util::{stream, StreamExt};
 use serde_json::json;
 use shunt::{
-    config::{Config, ModelConfig, UpstreamConfig},
+    config::{AccountConfig, AuthMode, Config, ModelConfig, RouteConfig, UpstreamConfig},
     server,
 };
 use tokio::{sync::oneshot, task::JoinHandle};
@@ -140,6 +140,35 @@ pub fn config(url: String, alias: bool) -> Config {
         stage_router: None,
         subagents: None,
     }];
+    config
+}
+
+/// Env var holding the pool token of [`first_party_config`].
+pub const FIRST_PARTY_TOKEN_ENV: &str = "SHUNT_TEST_RESPONSE_CODING_TOKEN";
+
+/// A Claude-subscription pool at `url` serving model `native`. Shunt treats a
+/// subscription pool as first-party, so the client's `Accept-Encoding` is
+/// negotiated; any other base URL off api.anthropic.com is a third-party
+/// upstream and is asked for `identity`. Set [`FIRST_PARTY_TOKEN_ENV`] first.
+pub fn first_party_config(url: String) -> Config {
+    let mut config = Config::default();
+    config.server.sse_keepalive_seconds = 0;
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = url;
+    provider.auth = AuthMode::ClaudeOauth;
+    provider.accounts = vec![AccountConfig {
+        name: "acct".into(),
+        token_env: Some(FIRST_PARTY_TOKEN_ENV.into()),
+        uuid: Some("uuid-acct".into()),
+        ..Default::default()
+    }];
+    config.routes.push(RouteConfig {
+        model: "native".into(),
+        provider: "anthropic".into(),
+        upstream_model: None,
+        effort: None,
+        service_tier: None,
+    });
     config
 }
 

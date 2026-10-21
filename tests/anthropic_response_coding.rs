@@ -176,7 +176,8 @@ async fn compressed_native_verdict_is_preserved() {
 
 #[tokio::test]
 async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
-    let _env = common::env_lock().await;
+    let mut env = common::env_lock().await;
+    env.set(FIRST_PARTY_TOKEN_ENV, "test-token");
     for (offer, expected) in [
         (
             "gzip, deflate;q=0.5, br, zstd;q=0.7",
@@ -191,7 +192,7 @@ async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
             .expect(1)
             .mount(&upstream)
             .await;
-        let gateway = gateway(config(upstream.uri(), false)).await;
+        let gateway = gateway(first_party_config(upstream.uri())).await;
         let response = request(&gateway, offer, false, false, false).await;
         assert!(!response.headers().contains_key("content-encoding"));
         assert_eq!(response.text().await.unwrap(), "{}");
@@ -209,7 +210,8 @@ async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
 
 #[tokio::test]
 async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
-    let _env = common::env_lock().await;
+    let mut env = common::env_lock().await;
+    env.set(FIRST_PARTY_TOKEN_ENV, "test-token");
     for (offer, expected_offer, expected_coding) in [
         (Some("gzip"), "gzip", Some("gzip")),
         (Some("identity"), "identity", None),
@@ -250,7 +252,7 @@ async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
             .expect(1)
             .mount(&upstream)
             .await;
-        let gateway = gateway(config(upstream.uri(), false)).await;
+        let gateway = gateway(first_party_config(upstream.uri())).await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let mut request = client.post(format!("{}/v1/messages", gateway.url))
             .json(&json!({"model":"native","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}));

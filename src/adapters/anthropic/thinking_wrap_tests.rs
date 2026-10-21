@@ -1225,8 +1225,8 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
     let _ = std::fs::remove_file(&credentials);
     assert_eq!(
         last_accept_encoding(&claude).await.as_deref(),
-        Some("gzip, br"),
-        "a first-party request keeps the client's header"
+        Some("gzip"),
+        "a first-party request keeps the client's supported codings"
     );
     assert_eq!(
         away["messages"][1]["content"],
