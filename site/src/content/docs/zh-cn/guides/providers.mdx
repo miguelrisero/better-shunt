@@ -20,7 +20,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`openai`](/zh-cn/providers/openai/) | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | [`codex`](/zh-cn/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json` |
 | `xai` | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
-| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
+| `grok` | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅,或汇集 `~/.shunt/accounts/xai/` 下的命名登录(`shunt login xai --name`) |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |

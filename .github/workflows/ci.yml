@@ -21,6 +21,25 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # PostgreSQL for the store contract tests (src/store/contract.rs). REQUIRED=1
+    # fails an unset or unreachable URL instead of skipping the postgres arm.
+    env:
+      SHUNT_TEST_POSTGRES_URL: postgres://shunt:shunt-ci@localhost:5432/shunt_test
+      SHUNT_TEST_POSTGRES_REQUIRED: "1"
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_USER: shunt
+          POSTGRES_PASSWORD: shunt-ci
+          POSTGRES_DB: shunt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:

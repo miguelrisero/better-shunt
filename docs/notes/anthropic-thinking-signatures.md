@@ -108,14 +108,66 @@ written as "what shunt minted", never as "what looks valid".
 
 Every non-Anthropic provider surfaced through the Messages protocol has to put
 something in the field, because Claude Code round-trips assistant blocks
-verbatim. Three do, and `crate::model::thinking_signature` owns all three so the
-strip cannot fall out of step with them.
+verbatim. Three do, and a fourth form wraps a signature shunt did not mint;
+`crate::model::thinking_signature` owns all four so the strip cannot fall out of
+step with them.
 
 | Producer | Value | Why it is not Anthropic's |
 |---|---|---|
 | Responses / Codex | base64url of `{"id", "enc"}` | shunt's own round-trip envelope for a Responses `reasoning` item |
 | Gemini | `gemini_thinking` | Gemini issues no signature; the literal exists to make the block well-formed |
 | Cursor | `""` | the agent stream carries reasoning text and nothing signature-shaped |
+| Third-party Anthropic-kind upstream | base64url of `{"upstream", "sig"}`, `upstream` a digest of the `base_url` | wraps a signature a host other than `api.anthropic.com` issued (issue #783) |
+
+The last row is the one that is not shunt's invention underneath. A third-party
+Anthropic-kind provider (MiniMax, Kimi, Zhipu, …) is relayed untranslated, so
+any signature it emits would otherwise reach the client indistinguishable from
+Anthropic's and be forwarded to `api.anthropic.com` on a later turn. Whether a
+given host emits one, and whether Anthropic rejects it with a 400, is not yet
+confirmed against a live upstream (issue #783).
+`src/adapters/anthropic/thinking_wrap.rs` wraps it on the response path, keyed
+on a digest of the provider's `base_url` with any trailing `/` trimmed (the first 16 bytes of its SHA-256, in
+lowercase hex; the envelope is client-visible and a `base_url` can carry credentials, so the URL itself is never
+exposed; the digest is unsalted, so it still confirms a guess of the whole `base_url`, credentials included) — not for `claude_oauth` pools or a
+first-party host, whose responses stay passthrough — and restores the original
+only for a request going back to a provider with that same `base_url`. The
+strip runs first and spares that provider's own envelopes, so a restored value
+that is itself another shunt's envelope survives the hop. Everywhere else the envelope is recognised as shunt-minted and
+dropped. The field names are disjoint from the Responses form's, so neither
+decoder accepts the other's value.
+A request to such a provider also carries `Accept-Encoding: identity` in place
+of the client's value: shunt's HTTP client decodes no content coding, so a
+compressed reply could not be parsed to wrap and would pass through raw.
+
+On a stream, a block's signature bytes are withheld until its
+`content_block_stop` and then emitted as one wrapped `signature_delta`. The
+withheld total therefore has its own bound, separate from the 64 KiB a frame
+without a signature may grow to before it is forwarded unread: 8 MiB per
+stream, with each open block charged a further 64 bytes so that many tiny
+signatures cannot hold more memory than the bound counts. A block's charge
+is released when its signature is emitted. On an internal capped call, each
+bound is lowered to the caller's byte cap when that is smaller, so there a
+single signature fails closed once it comes within 64 bytes of the cap. A
+signature is an encrypted copy of the full
+reasoning (see above), so it cannot be assumed to stay small, and a
+signature-bearing frame past the frame bound is held to its boundary rather
+than forwarded. Past the signature bound, or when a `"signature"` key turns up
+inside a frame already being forwarded unread, the stream fails closed (a key
+is recognised by the `:` that follows it after at most four spaces or tabs; a
+key with a longer gap, or with its `:` on the next `data:` line, is an
+accepted residual and is not recognised): the
+withheld bytes are dropped, the client receives an Anthropic-shape `error`
+event (`api_error`), and nothing follows it. The raw signature is never
+forwarded on that path, nor when the upstream ends inside a signature-bearing
+frame: that incomplete frame is dropped. When a key turns up in a frame
+already being forwarded, the front of that frame has already reached the
+client, and the blank line that ends it before
+the `error` event dispatches that truncated event too. A client that parses
+each event's data as JSON, as the Anthropic SDKs do, therefore reports a parse
+error first rather than the `error` event's message. An event whose JSON
+spans several `data:` lines is joined with `\n`, as the SSE spec requires,
+before it is parsed, here and in the `message_start` model-alias rewrite; a
+rewritten event is emitted on one `data:` line.
 
 The empty string is the one to watch, because Anthropic's own streaming shape
 uses it too: [the thinking page][thinking]'s worked event sequence opens the

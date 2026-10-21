@@ -22,8 +22,8 @@ use std::time::Instant;
 use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode, Uri};
 use serde_json::Value;
 
-use super::{observe_response, stamp_router_headers, InboundContext, OwnedRouterStamp};
-use crate::proxy::ForwardError;
+use super::{observe_response, stamp_router_headers, InboundContext, OwnedRouterStamp, ServedBy};
+use crate::proxy::{spend_gate::ServedTarget, ForwardError};
 use crate::request::RequestBody;
 use crate::routing::{
     self,
@@ -161,6 +161,7 @@ pub(super) async fn consult(
 pub(super) async fn finish(
     exit: GatedExit,
     started_at: Instant,
+    attribution: crate::client_attribution::ClientAttribution,
     requested_safeguards: &[String],
     max_body_bytes: usize,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
@@ -169,6 +170,9 @@ pub(super) async fn finish(
             let mut response = axum::response::Response::new(axum::body::Body::from(turn.body));
             *response.status_mut() = turn.status;
             *response.headers_mut() = turn.headers;
+            if let Some(coding) = turn.coding {
+                response.extensions_mut().insert(coding);
+            }
             // The retained bytes are served whole, so the length is the
             // body's own; an upstream length describing a different encoding
             // of the same turn would contradict them.
@@ -186,6 +190,7 @@ pub(super) async fn finish(
                     crate::stream_metrics::Protocol::Anthropic,
                     turn.provider,
                     turn.model,
+                    attribution,
                     started_at,
                 );
                 return Ok((turn.status, response));
@@ -196,8 +201,15 @@ pub(super) async fn finish(
             Ok(observe_response(
                 turn.status,
                 response,
-                turn.provider,
-                turn.model,
+                ServedBy {
+                    provider: turn.provider,
+                    model: turn.model,
+                    // Unmetered here: a gated turn is billed at its capture
+                    // (issue #728, T004), which also covers a captured turn
+                    // that is discarded rather than replayed.
+                    spend: None,
+                },
+                attribution,
                 started_at,
                 requested_safeguards,
                 max_body_bytes,
@@ -245,7 +257,6 @@ pub(crate) async fn committed_stream(
         return None;
     }
     let first = routes.first()?;
-    let (provider, model) = (first.provider.clone(), first.model.clone());
     let outcome = crate::proxy::chain_stream::forward_chain_stream(
         crate::proxy::chain_stream::ChainStreamRequest {
             state: request.state.clone(),
@@ -260,17 +271,27 @@ pub(crate) async fn committed_stream(
             // Stamped when the verdict is known, as on every gated turn.
             router_stamp: None,
             observe_stream: false,
+            spend: None,
         },
     )
     .await;
-    Some(
-        outcome.map(|(status, response)| super::chain::ChainSuccess {
+    Some(outcome.map(|(status, response)| {
+        // The first route's target, as `forward_chain_stream` seeded it:
+        // the committed stream's real winner is on its
+        // `ChainStreamWinner` extension once drained.
+        let target = response
+            .extensions()
+            .get::<crate::proxy::chain_stream::ChainStreamWinner>()
+            .map_or_else(
+                || ServedTarget::of(request.state, first, request.body.json()),
+                |winner| winner.served(),
+            );
+        super::chain::ChainSuccess {
             status,
             response,
-            provider,
-            model,
-        }),
-    )
+            target,
+        }
+    }))
 }
 
 /// Append `messages` to the request's `messages` array. `false` — nothing

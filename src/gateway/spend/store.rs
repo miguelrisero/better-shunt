@@ -1,6 +1,14 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use serde::{Deserialize, Serialize};
+
+use super::meter::{Assessment, SpendMeter};
 
 /// Largest supported amount in USD cents. The next enforcement stage uses
 /// unsigned 64-bit arithmetic, and this bound keeps the wire value at 19 digits.
@@ -37,7 +45,7 @@ pub enum Scope {
     Organization,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Period {
     Daily,
@@ -119,8 +127,12 @@ pub(crate) struct SpendState {
 
 pub struct SpendStore {
     state: Mutex<SpendState>,
-    mutation_gate: tokio::sync::Mutex<()>,
+    mutation_gate: Arc<tokio::sync::Mutex<()>>,
+    /// A store write's outcome stayed unknown and could not be read back, so
+    /// memory may be behind the store. Cleared by the next mutation's resync.
+    needs_resync: AtomicBool,
     state_path: Option<PathBuf>,
+    meter: SpendMeter,
 }
 
 impl SpendStore {
@@ -130,13 +142,41 @@ impl SpendStore {
                 next_audit_id: 1,
                 ..SpendState::default()
             }),
-            mutation_gate: tokio::sync::Mutex::new(()),
+            mutation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            needs_resync: AtomicBool::new(false),
             state_path,
+            meter: SpendMeter::default(),
         }
     }
 
-    pub(crate) async fn mutation_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutation_gate.lock().await
+    /// The process-lifetime spend counters, kept off `SpendState` so the
+    /// request path never clones the limit tables.
+    pub fn meter(&self) -> &SpendMeter {
+        &self.meter
+    }
+
+    /// Checks `principal` against the stored caps at `now_secs` (Unix
+    /// seconds), returning the verdict plus the binding cap from one snapshot
+    /// (see [`SpendMeter::assess`]).
+    pub fn assess(&self, principal: &str, now_secs: u64) -> Assessment {
+        let state = self
+            .state
+            .lock()
+            .expect("gateway spend-limit lock poisoned");
+        self.meter.assess(&state.limits, principal, now_secs)
+    }
+
+    /// Owned, so a mutation can move it into the task that commits and replaces.
+    pub(crate) async fn mutation_gate(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.mutation_gate.clone().lock_owned().await
+    }
+
+    pub(crate) fn set_needs_resync(&self, needed: bool) {
+        self.needs_resync.store(needed, Ordering::SeqCst);
+    }
+
+    pub(crate) fn needs_resync(&self) -> bool {
+        self.needs_resync.load(Ordering::SeqCst)
     }
 
     pub fn get(&self, id: &str) -> Option<SpendLimit> {

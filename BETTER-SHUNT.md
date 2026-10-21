@@ -8,7 +8,7 @@ Setup guide: [docs/setup-shunt.md](https://github.com/miguelrisero/ultraship/blo
 
 ## Baseline and maintained changes
 
-Upstream baseline: `e147f9b` (v0.55.1), merged into
+Upstream baseline: `0dbdae0` (main after v0.57.1), merged into
 fork `main`. Changes are deliberately pinned instead of deploying upstream main automatically.
 
 - Conservative schema regex filtering: a pattern must pass the Python compatibility
@@ -16,6 +16,13 @@ fork `main`. Changes are deliberately pinned instead of deploying upstream main 
   ([#492](https://github.com/pleaseai/shunt/issues/492)). It applies to eager,
   shim-revealed, native ToolSearch and inbound Responses-to-Chat tools
   ([#489](https://github.com/pleaseai/shunt/issues/489)). Original request data is not mutated.
+- Anthropic response decoding from
+  [skuda/shunt#4](https://github.com/skuda/shunt/pull/4), not yet upstream: native
+  Anthropic gzip, deflate and zstd responses are decoded before safeguard synthesis,
+  alias rewrite, keepalive and metrics read them, then re-encoded for the client.
+  Without it, Claude Code auto mode can receive no bytes until the compressed reply
+  ends. Retire it when upstream ships an equivalent change that passes
+  `tests/anthropic_response_coding.rs`.
 - Progressive tool discovery and readable tool-reference history on non-Anthropic
   Messages providers ([#424](https://github.com/pleaseai/shunt/issues/424)). No arbitrary
   truncation of the callable catalog.
@@ -79,11 +86,11 @@ boundary in `src/routing/` and `src/config/router/` uses them; no feature flag r
 The optional `prefill-router` crate from the same rev links libpython through `pyo3`.
 Release builds do not enable `prefill-router`; CI builds it through `--all-features`.
 
-## Upstream issue audit — 2026-09-30 (re-checked at v0.55.1; #489, #492 and #424 still open)
+## Upstream issue audit — 2026-09-30 (re-checked at 0dbdae0 after v0.57.1; #489, #492 and #424 still open)
 
 | Issue | Applicability and policy |
 | --- | --- |
-| [#489](https://github.com/pleaseai/shunt/issues/489) | Upstream v0.55.1 still omits regex sanitization in the inbound Responses-to-Chat function schema. Retain the preventive fix; this is separate from Claude-to-Astra translation. |
+| [#489](https://github.com/pleaseai/shunt/issues/489) | Upstream main after v0.57.1 still omits regex sanitization in the inbound Responses-to-Chat function schema. Retain the preventive fix; this is separate from Claude-to-Astra translation. |
 | [#492](https://github.com/pleaseai/shunt/issues/492) | Add real regex-lite parsing to the existing Python approximation; pin lookaround, malformed syntax and literal-preservation regressions. This is conservative, not a guarantee of equivalence with every backend. |
 | [skuda lookaround fix](https://github.com/skuda/shunt/commit/87c138c25eb7d7647682660288e04714811ef57e) | Same failure class already fixed here. The exact public Neon email pattern is included in eager and revealed-schema regression tests. |
 | [#424](https://github.com/pleaseai/shunt/issues/424) | Existing progressive-reveal patch renders tool references as text for our non-Anthropic Messages routes. Native Anthropic remains passthrough. |

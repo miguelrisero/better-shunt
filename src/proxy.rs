@@ -14,6 +14,8 @@ use crate::{error::ShuntError, model::responses::anthropic_error_type, server::A
 pub(crate) mod chain_stream;
 pub(crate) mod failover;
 pub(crate) mod safeguards;
+pub(crate) mod spend_gate;
+pub(crate) mod spend_headers;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -59,6 +61,8 @@ pub async fn post(
         session_id = span_session_id,
         gen_ai.request.model = tracing::field::Empty,
         shunt.provider = tracing::field::Empty,
+        shunt.client_kind = tracing::field::Empty,
+        shunt.managed = tracing::field::Empty,
         http.response.status_code = tracing::field::Empty,
         otel.status_code = tracing::field::Empty
     );
@@ -71,7 +75,7 @@ pub async fn post(
                     latency_ms = started_at.elapsed().as_millis(),
                     "proxied request"
                 );
-                response
+                crate::response_coding::encode_response(response)
             }
             Err(error) => {
                 tracing::warn!(
