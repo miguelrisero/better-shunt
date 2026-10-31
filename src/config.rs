@@ -6879,8 +6879,8 @@ mod tests {
         // writes can share one filesystem clock tick; drive invalidation
         // explicitly instead of assuming that creating files advances it.
         let modified = std::fs::metadata(path).unwrap().modified().unwrap();
-        let times = std::fs::FileTimes::new()
-            .set_modified(modified + std::time::Duration::from_secs(1));
+        let times =
+            std::fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(1));
         std::fs::File::open(path).unwrap().set_times(times).unwrap();
     }
 
