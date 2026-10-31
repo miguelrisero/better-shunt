@@ -277,11 +277,12 @@ fields. Ready-to-use entries (uncomment in
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax China — built-in preset | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen — built-in preset | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
+| Cheaper Inference — built-in preset | `https://api.cheaperinference.com` | `gpt-5.4`, `deepseek-v4-flash`, `glm-5.3` — OpenAI-compatible gateway with a Messages endpoint |
 | Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-`zhipu`, `minimax-cn`, and `opencode` are also built-in presets, so they do not need a `[providers.*]` table
+`zhipu`, `minimax-cn`, `opencode`, and `cheaperinference` are also built-in presets, so they do not need a `[providers.*]` table
 from `shunt.toml.example`. Use the ordered `[[upstreams]]` form instead — for example,
 `provider = "zhipu"` or `provider = "minimax-cn"` — and keep the `anthropic` passthrough default.
 
@@ -478,6 +479,9 @@ there is no equivalent upstream endpoint, so the provider's `count_tokens` setti
   image/tool-schema encoding or cache accounting. Each count is answered in-process (~ms), which
   matters because Claude Code's `/context` issues one `count_tokens` call **per displayed item**
   (system-prompt section, memory file, agent, deferred tool, …) — 30–50 calls per invocation.
+  The encoder's vocabulary loads once at startup (about half a second) whenever a non-Anthropic
+  provider uses this setting, so neither the first count nor the first streaming turn's
+  `message_start` input estimate waits on it.
 - `count_tokens = "estimate"` (opt-in) — shunt returns **501 `not_supported`**, telling Claude
   Code that the endpoint is unavailable and triggering its fallback. Note what Claude Code actually
   does then: the main-loop context bar estimates locally, but `/context` re-runs **every** category
@@ -944,6 +948,14 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 
 This is global, so it also removes attribution from any Anthropic-passthrough traffic (used for
 cost tracking) — which is fine when you're routing to another provider.
+
+With `=0`, some Claude Code side requests carry no first-party marker at all: mods'
+`$.model.complete` queries lose the attribution block that was their only one, and the auto-mode
+classifier never carries the identity prompt. On a subscription-OAuth Anthropic route those would
+otherwise reach `api.anthropic.com` unmarked and come back as a bare 429 (`client-shape-rejection`). shunt
+re-adds the Claude Code identity block on Claude Code requests (identified by
+`x-claude-code-session-id`, a `claude-cli/` user agent, or `x-app: cli`) that carry no accepted marker, so `=0`
+stays safe.
 
 ### 5.8 Context / usage display for mapped models
 

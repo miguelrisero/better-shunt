@@ -27,8 +27,8 @@ use super::body::{prepare_body, PreparedBody};
 use super::codex_ws::KEY_COMPONENT_SEPARATOR;
 use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
 use super::early_stream::{
-    estimated_machine_factory, http_events_stream, parsed_events, pool_streaming_response,
-    HttpSendContext, InputEstimate, PoolEvent, PoolItem,
+    estimated_machine_factory, http_events_stream, pool_streaming_response, HttpSendContext,
+    InputEstimate, PoolEvent, PoolItem,
 };
 use super::error::{
     adapter_error_envelope, mapped_upstream_error, mapped_upstream_error_within, own_error,
@@ -36,6 +36,7 @@ use super::error::{
 };
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
+use crate::adapters::buffer_error_body;
 use crate::proxy::chain_stream::LazyEnvelope;
 
 #[cfg(test)]
@@ -759,8 +760,12 @@ pub(super) fn pool_events_stream(
                                     );
                                     if status.is_success() {
                                         record(StatusCode::OK);
-                                        let parsed: Parsed =
-                                            Box::pin(parsed_events(upstream.bytes_stream()));
+                                        let parsed: Parsed = super::pool_plan::relay_events(
+                                            &state,
+                                            &route,
+                                            account,
+                                            upstream.bytes_stream(),
+                                        );
                                         phase = Phase::Relay {
                                             parsed,
                                             guard: admission,
@@ -920,8 +925,12 @@ pub(super) fn pool_events_stream(
                                                     true,
                                                 );
                                                 record(StatusCode::OK);
-                                                let parsed: Parsed =
-                                                    Box::pin(parsed_events(retry.bytes_stream()));
+                                                let parsed: Parsed = super::pool_plan::relay_events(
+                                                    &state,
+                                                    &route,
+                                                    account,
+                                                    retry.bytes_stream(),
+                                                );
                                                 phase = Phase::Relay {
                                                     parsed,
                                                     guard: admission,
@@ -1288,7 +1297,9 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.response_bounds,
                         idle_since,
                     )
-                    .await?;
+                    .await;
+                    super::pool_plan::cool_on_relayed_limit(&state, &route, account, &response);
+                    let response = response?;
                     let response = crate::adapters::with_admission(
                         with_account_header(response, &account.name),
                         admission,
@@ -1386,7 +1397,11 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.response_bounds,
                                 retry_since,
                             )
-                            .await?;
+                            .await;
+                            super::pool_plan::cool_on_relayed_limit(
+                                &state, &route, account, &response,
+                            );
+                            let response = response?;
                             let response = crate::adapters::with_admission(
                                 with_account_header(response, &account.name),
                                 admission,
@@ -1464,6 +1479,9 @@ fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
 pub(super) fn no_upstream_response_message(auth: AuthMode) -> &'static str {
     match auth {
         AuthMode::XaiOauth => "all xAI OAuth accounts failed before receiving an upstream response",
+        AuthMode::ChatgptPlanOauth => {
+            "all ChatGPT plan accounts failed before receiving an upstream response"
+        }
         _ => "all Codex OAuth accounts failed before receiving an upstream response",
     }
 }
@@ -1529,8 +1547,8 @@ fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> 
 /// Inject `x-shunt-account` naming which pool account produced the response,
 /// mirroring the Anthropic adapter's `relay_response`. Silently skipped if the
 /// account name is not a valid header value — should never happen, since
-/// account names are validated against `[a-z0-9-]+` at import time (see
-/// `auth::codex::store::validate_account_name`).
+/// account names are validated as visible ASCII at import time (see
+/// `auth::shared::validate_account_name`).
 pub(super) fn with_account_header(
     mut response: axum::response::Response,
     account_name: &str,
@@ -1609,6 +1627,9 @@ pub(super) async fn resolve_or_cooldown(
 ) -> Option<Credential> {
     if account.store_family == Some(accounts::StoreFamily::Xai) {
         return resolve_xai_or_cooldown(state, route, account).await.ok();
+    }
+    if super::pool_plan::is_plan_account(account) {
+        return super::pool_plan::resolve_plan_or_cooldown(state, route, account).await;
     }
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
@@ -1691,6 +1712,10 @@ pub(super) async fn force_refresh_or_cooldown(
     account: &AccountConfig,
     credential: &Credential,
 ) -> Option<Credential> {
+    if super::pool_plan::is_plan_account(account) {
+        return super::pool_plan::force_refresh_plan_or_cooldown(state, route, account, credential)
+            .await;
+    }
     if account.token_env.is_some() {
         state.accounts.cooldown(
             &route.provider,
@@ -1781,110 +1806,6 @@ pub(super) async fn force_refresh_or_cooldown(
 /// The pool-rotation metric reason [`rotate_on_model_refusal`] records.
 const MODEL_NOT_SUPPORTED: &str = "model_not_supported";
 
-/// Read the head of an upstream error body so it can be checked for a model
-/// refusal. The read is bounded like the Responses adapter's error envelope
-/// read ([`crate::error::ERROR_ENVELOPE_BUDGET`] and
-/// [`crate::error::ERROR_ENVELOPE_BYTES`]), plus the gated idle gap when the
-/// caller has one (`ResponseBounds::idle`, as `json_response` honours it):
-/// `clock` is that gap and the attempt's send, so the first wait is the rest
-/// of the gap the header wait began rather than a fresh one, and each chunk
-/// refreshes it (#704). The
-/// bytes are returned only when the whole body arrived within those bounds: a
-/// body that declares or passes the cap, trips the budget, or breaks is not a
-/// refusal, and is passed on unjudged. Only an idle cut is an error: it is the
-/// caller's bound, carried back to `routing::serve` as its marker. With a
-/// clock, a budget trip before the body sent a byte is that cut too (#710).
-///
-/// What an unjudged body becomes depends on who relays it. `verbatim` (the
-/// inbound passthrough) replays every byte read followed by whatever the
-/// upstream has not sent yet — a declared-oversized body is not read at all —
-/// so the client gets the upstream's 400 exactly as it was sent. Otherwise the
-/// body is the text the envelope read falls back to (`upstream returned
-/// {status}`): the translating path would render that anyway, and handing it
-/// the unread remainder would restart the envelope read's budget, outside the
-/// idle gap, on a body that has already spent both.
-async fn buffer_error_body(
-    upstream: reqwest::Response,
-    clock: Option<(Duration, tokio::time::Instant)>,
-    verbatim: bool,
-) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
-    let declared_oversized = upstream
-        .content_length()
-        .is_some_and(|length| length > crate::error::ERROR_ENVELOPE_BYTES as u64);
-    if declared_oversized && verbatim {
-        return Ok((upstream, None));
-    }
-    let status = upstream.status();
-    let version = upstream.version();
-    let mut headers = upstream.headers().clone();
-    let mut rest = upstream.bytes_stream();
-    let budget = tokio::time::Instant::now() + crate::error::ERROR_ENVELOPE_BUDGET;
-    let mut read = Vec::new();
-    let mut total = 0usize;
-    let mut idle_deadline = clock.map(|(idle, since)| since + idle);
-    let complete = !declared_oversized
-        && loop {
-            let wait = idle_deadline.map_or(budget, |deadline| deadline.min(budget));
-            match tokio::time::timeout_at(wait, rest.next()).await {
-                Ok(None) => break true,
-                Ok(Some(Ok(chunk))) => {
-                    idle_deadline = clock.map(|(idle, _)| tokio::time::Instant::now() + idle);
-                    total = total.saturating_add(chunk.len());
-                    read.push(Ok(chunk));
-                    if total > crate::error::ERROR_ENVELOPE_BYTES {
-                        break false;
-                    }
-                }
-                Ok(Some(Err(error))) => {
-                    read.push(Err(error));
-                    break false;
-                }
-                Err(_) => match (clock, idle_deadline) {
-                    (Some((idle, _)), Some(deadline)) if deadline < budget => {
-                        return Err(crate::adapters::idle_error(
-                            crate::adapters::UpstreamBodyIdle { idle },
-                        ));
-                    }
-                    // The budget ended a body that never sent a byte: on a
-                    // gated call that is a stall too, as
-                    // `bounded_upstream_text_within` cuts it (#710).
-                    (Some(_), _) if total == 0 => {
-                        return Err(crate::adapters::idle_error(
-                            crate::adapters::UpstreamBodyIdle {
-                                idle: crate::error::ERROR_ENVELOPE_BUDGET,
-                            },
-                        ));
-                    }
-                    _ => break false,
-                },
-            }
-        };
-    let (body, judged) = if complete {
-        let mut bytes = bytes::BytesMut::with_capacity(total);
-        for chunk in read.iter().flatten() {
-            bytes.extend_from_slice(chunk);
-        }
-        let bytes = bytes.freeze();
-        (reqwest::Body::from(bytes.clone()), Some(bytes))
-    } else if verbatim {
-        (
-            reqwest::Body::wrap_stream(stream::iter(read).chain(rest)),
-            None,
-        )
-    } else {
-        headers.remove(reqwest::header::CONTENT_LENGTH);
-        (
-            reqwest::Body::from(format!("upstream returned {status}")),
-            None,
-        )
-    };
-    let mut rebuilt = axum::http::Response::new(body);
-    *rebuilt.status_mut() = status;
-    *rebuilt.version_mut() = version;
-    *rebuilt.headers_mut() = headers;
-    Ok((reqwest::Response::from(rebuilt), judged))
-}
-
 /// Check a relay-classified response for the per-account model refusal
 /// ([`accounts::is_codex_model_unsupported`]). Only a 400 has its body read —
 /// every other status passes through untouched, unread. On a match the
@@ -1947,7 +1868,10 @@ pub(super) enum FirstOutcome {
 /// the passthrough relays verbatim). A 400 model refusal rotates instead
 /// ([`rotate_on_model_refusal`]); `clock` (the gated idle gap and the send it
 /// runs from) bounds that body read and its trip is the only `Err`, and `verbatim` (the passthrough) keeps an unjudged 400's body
-/// intact rather than falling back ([`buffer_error_body`]).
+/// intact rather than falling back ([`buffer_error_body`]). A chatgpt-plan
+/// account's 2xx answer first passes the pre-content check
+/// ([`super::pool_plan::peek_if_plan`]), so an early in-stream SIWC failure is
+/// classified here as its mapped status.
 pub(super) async fn classify_first(
     state: &AppState,
     route: &Route,
@@ -1959,6 +1883,7 @@ pub(super) async fn classify_first(
     if account.store_family == Some(accounts::StoreFamily::Xai) {
         return Ok(classify_first_xai(state, route, account, upstream));
     }
+    let upstream = super::pool_plan::peek_if_plan(account, upstream, clock).await;
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
         FailoverAction::Relay => {
@@ -2047,7 +1972,8 @@ pub(super) enum RetryOutcome {
 /// only that model ([`rotate_on_model_refusal`]). `classify_codex` returns
 /// `RefreshRetry` only for 401 (handled above) and never `PauseSame`, so only
 /// `Relay` and `Rotate` are live — the others ride `Rotate`'s arm as a defensive
-/// no-op.
+/// no-op. A chatgpt-plan retry passes the same pre-content check as
+/// [`classify_first`].
 pub(super) async fn classify_retry(
     state: &AppState,
     route: &Route,
@@ -2056,6 +1982,7 @@ pub(super) async fn classify_retry(
     clock: Option<(Duration, tokio::time::Instant)>,
     verbatim: bool,
 ) -> Result<RetryOutcome, AdapterError> {
+    let retry = super::pool_plan::peek_if_plan(account, retry, clock).await;
     let retry_status = retry.status();
     if retry_status == StatusCode::UNAUTHORIZED {
         state.accounts.cooldown(

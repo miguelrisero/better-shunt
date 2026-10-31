@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.61.0](https://github.com/pleaseai/shunt/compare/v0.60.0...v0.61.0) (2026-10-30)
+
+
+### Features
+
+* **auth:** accept inbound JWTs from a configured header or cookie for Codex gateway OAuth ([#862](https://github.com/pleaseai/shunt/issues/862)) ([56b9fc0](https://github.com/pleaseai/shunt/commit/56b9fc0ad03f99060feb0ed36a5a65ab8fd330ce))
+
+## [0.60.0](https://github.com/pleaseai/shunt/compare/v0.59.1...v0.60.0) (2026-10-27)
+
+
+### Features
+
+* **accounts:** allow . _ @ + in account names, so a name can be the login's email ([#847](https://github.com/pleaseai/shunt/issues/847)) ([66c2c0b](https://github.com/pleaseai/shunt/commit/66c2c0bfd712003b4e7ae6179c4f493518b08e8d))
+* **auth:** inbound JWT phase 2 workload identity (require, subject_prefix, identity_claim) ([#854](https://github.com/pleaseai/shunt/issues/854)) ([83ef44b](https://github.com/pleaseai/shunt/commit/83ef44b4ae1c1cc6267fe6e7fa32d493fb500cf5))
+
+
+### Bug Fixes
+
+* **admin:** redeem the OIDC callback state before spending the login budget ([#838](https://github.com/pleaseai/shunt/issues/838)) ([b3fe834](https://github.com/pleaseai/shunt/commit/b3fe834d3808b5d5068c0ccfcc7fbee204a271b2))
+* **auth:** keep refresh tokens and auth codes on their own host ([#839](https://github.com/pleaseai/shunt/issues/839)) ([a66b87c](https://github.com/pleaseai/shunt/commit/a66b87c9462594e99b42d1b76fd21dc1e23b5e5e))
+* **deps:** bump crates past published RustSec advisories ([#835](https://github.com/pleaseai/shunt/issues/835)) ([3dfdf1f](https://github.com/pleaseai/shunt/commit/3dfdf1f634a1f17f80a1ecc76cb8d9eed826df04))
+
+## [0.59.1](https://github.com/pleaseai/shunt/compare/v0.59.0...v0.59.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **anthropic:** decode compressed upstream responses before relaying ([#832](https://github.com/pleaseai/shunt/issues/832)) ([83e312f](https://github.com/pleaseai/shunt/commit/83e312f2b1b58bf35c60f246688d6398e8c94743))
+* **anthropic:** keep every anthropic-beta line when adding the OAuth beta ([#834](https://github.com/pleaseai/shunt/issues/834)) ([b36a8f0](https://github.com/pleaseai/shunt/commit/b36a8f0b6ecd224439c20d767cad0bc592087c00))
+* **auth:** bound the Claude token refresh with a request timeout ([#833](https://github.com/pleaseai/shunt/issues/833)) ([a658fef](https://github.com/pleaseai/shunt/commit/a658fef8621337dfd51174421f1c7f5c438f1f70))
+
+## [0.59.0](https://github.com/pleaseai/shunt/compare/v0.58.0...v0.59.0) (2026-10-23)
+
+
+### Features
+
+* **failover:** advance the chain on Anthropic account-level refusals ([#825](https://github.com/pleaseai/shunt/issues/825)) ([17c00ff](https://github.com/pleaseai/shunt/commit/17c00ffb4fed1e88ebe58c8053e0b1980f711291))
+
+## [0.58.0](https://github.com/pleaseai/shunt/compare/v0.57.1...v0.58.0) (2026-10-22)
+
+
+### Features
+
+* **otel:** tag per-request metrics with client_kind and managed attribution ([#811](https://github.com/pleaseai/shunt/issues/811)) ([0387f9d](https://github.com/pleaseai/shunt/commit/0387f9d56c919003399d4a6e1a5c79c942bb89aa))
+* **spend:** enforce and meter spend caps on the inbound Codex endpoint ([#814](https://github.com/pleaseai/shunt/issues/814)) ([9c706c8](https://github.com/pleaseai/shunt/commit/9c706c8fda54d64eba35cdd55ab887dac45fdbde))
+* **spend:** enforce per-user spend caps on /v1/messages (stage 2) ([#732](https://github.com/pleaseai/shunt/issues/732)) ([c4a42b8](https://github.com/pleaseai/shunt/commit/c4a42b83a95929ce6d533cc80140143c227c27c3))
+
+
+### Bug Fixes
+
+* **anthropic:** bound withheld thinking signatures and parse multi-line SSE data ([#803](https://github.com/pleaseai/shunt/issues/803)) ([82122fe](https://github.com/pleaseai/shunt/commit/82122fe57e9c874c83cb4d147f9e2e317914994e))
+* **anthropic:** restore the Claude Code identity on side queries without a first-party marker ([#824](https://github.com/pleaseai/shunt/issues/824)) ([87cee41](https://github.com/pleaseai/shunt/commit/87cee41a398f3de6487e50129bd5ef5133b60eb5))
+* **count-tokens:** load the tiktoken vocab at startup, not on the first turn ([#818](https://github.com/pleaseai/shunt/issues/818)) ([f179e78](https://github.com/pleaseai/shunt/commit/f179e78556e53a1bdec953b58ee496a5794b75eb))
+* **routing:** gate the child-pin cap re-export on the bench feature ([#812](https://github.com/pleaseai/shunt/issues/812)) ([5ebd404](https://github.com/pleaseai/shunt/commit/5ebd4042f3549901684ecb3238e37e7b3771903d))
+* **store:** bound every PostgreSQL round trip at 15 s ([#781](https://github.com/pleaseai/shunt/issues/781)) ([de14013](https://github.com/pleaseai/shunt/commit/de140138424ef3eb6a0c8767116c5de576c1b238))
+
 ## [0.57.1](https://github.com/pleaseai/shunt/compare/v0.57.0...v0.57.1) (2026-10-19)
 
 

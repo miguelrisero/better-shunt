@@ -94,6 +94,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
 
+要让开发者通过组织的身份提供商,用 Codex CLI 的 `gateway_oauth` 逐人登录,请设置 `[server.auth]` 的 `jwt_header` 或 `jwt_cookie`:此时端点也会从该头部或 cookie 读取 IdP JWT,并像其他客户端凭据一样将其移除。参见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#7-通过身份提供商登录gateway-oauth)。
+
 ## WebSocket 传输
 
 这三个 Responses 路径同时接受 HTTP `POST` 和经过身份验证的 WebSocket `GET` 升级。身份验证在 `101 Switching Protocols` 之前完成。在套接字上，`generate: false` 预热在本地完成；常规的 `response.create` 帧复用 HTTP 账户池，强制上游流式传输，并在第一个终端事件之前将每个 SSE `data:` 有效载荷作为 WebSocket 文本帧转发。替换轮次或关闭套接字将取消活动的上游请求体。客户端帧和 SSE 事件限制为 4 MiB，发送应用有界背压，协议/上游故障使用仅包含安全响应元数据的独立 `type: "error"` 帧。
@@ -173,6 +175,28 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 - **单一凭据，无故障转移。** 被路由到的第三方背后没有故障转移账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。唯一感知账户池的例外是带命名账户的 `xai_oauth` 路由：它同样只发送一次请求（上游失败会原样转发，不会轮换），其凭据是账户池选择顺序中第一个能加载登录的账户（遵循提供方的 `account`/`accounts` 范围），无法加载登录的账户会被冷却并跳过；没有命名账户时，它是 `~/.shunt/xai-auth.json`。
 
 匹配是精确且区分大小写的，并且不限制字符集，所以 `MiniMax-M3`、`openai/gpt-6.1-sol`、`~openai/gpt-latest` 这类厂商标识都会按写法路由。指向另一个 `chatgpt_oauth` 提供方的路由则仍保留完整的账号池透传。路由从实时配置读取，因此在重载时生效。
+
+## 支出限制
+
+配置 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选)后,该端点会按与 `/v1/messages` 相同的主体上限进行检查和计量;未配置时下列内容均不适用。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
+
+- **检查时机。** 每个回合在调用任何上游之前检查,覆盖三条 Responses 路径的 HTTP `POST` 和 Responses WebSocket。主体是静态 `[server.auth]` 令牌名、已验证的 JWT 身份(`identity_claim`,默认为邮箱),或 `[server.auth]` 关闭时的匿名主体。该端点不接受 gateway 登录会话。
+- **拒绝响应。** 超限的回合收到 `429` 和 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<纪元秒>}}`,并带有 `retry-after`、`x-should-retry: false` 和 `x-codex-promo-message: <blocked_message>` 头部。仅当 `blocked_message` 为纯 ASCII 时才发送 promo 头部,文本始终也在 message 中。被点名的上限是已达上限中最晚重置的一个。启用 `fail_closed_on_error` 时,支出状态不可用的有上限主体会以相同的 type 被拒绝,且没有 `resets_at` 和 `retry-after`。
+- **Codex CLI 的显示。** 在固定版本 `rust-v0.159.3` 上,Codex CLI 不会重试该错误。它根据 `resets_at` 显示自己的文案("You've hit your usage limit … Try again at"),头部存在时一并显示 promo 消息,并忽略服务器消息。这是 Codex CLI 的行为,其他版本可能不同。
+- **WebSocket。** 被拒绝的 `response.create` 会收到一个 `{"type":"error","status":429,"error":{…},"headers":{…}}` 帧,其中包含相同的错误以及 `retry-after` 和 `x-codex-promo-message`。套接字保持打开,之后每个回合都会重新检查,`generate: false` 的预热不检查。
+- **网页搜索。** `/alpha/search` 及其别名在超限时被拒绝,且从不计量。
+- **计量。** 已完成的回合按 Responses 的 `usage` 计费,计入 `/v1/messages` 所写的同一组计数器,因此一个上限同时约束两个界面。缓存 token 按缓存读取费率计费,其余输入按输入费率计费;推理计入输出,没有缓存写入。未报告用量就结束的回合(客户端关闭、被替换的回合、中断的流)按"由请求体估算的输入加上已送达的输出"这一下限计费。非流式的 2xx JSON 响应体同样按其 `usage` 计费;未报告输入的响应体则改按估算的输入计费。
+- **GPT 价格。** 内置价目表没有 GPT/Codex 的价格,因此这些模型在添加行之前按未知模型费率计费(每百万 token `$5 / $25 / $0.50 / $6.25`,每个模型一次警告):
+
+```toml
+[[server.spend.pricing.overrides]]
+upstream = "codex"       # 端点的 provider
+model = "gpt-6.1-sol"
+input = 1.00             # 示例费率,每百万 token 的美元数
+output = 8.00
+cache_read = 0.10
+cache_write = 1.00
+```
 
 ## 与 `/v1/messages` 的差异
 

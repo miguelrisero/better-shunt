@@ -94,6 +94,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 Without `[server.auth]`, the endpoint is open to anyone who can reach it — acceptable for loopback or personal use, not for a shared gateway. The client's presented credential is used **only** to authenticate to shunt: it (and any `Authorization` the CLI happens to send) is stripped and never forwarded upstream. The `[server.admin]` credential header — `x-shunt-admin-token` by default, or whatever `[server.admin] header` names — is stripped too, since the admin surface authenticates on that slot and an admin credential can provision upstream accounts. So is the whole `cookie` header, because the admin surface also accepts a session cookie there; shunt keeps no cookie jar, so nothing upstream depends on it. `x-api-key` is stripped unconditionally too — even when `[server.auth]` is not configured — since the target provider is validated `chatgpt_oauth`-only at boot, so no inbound `x-api-key` value can ever be a valid upstream credential; a client whose `apiKeyHelper` sets both `Authorization` and `x-api-key` to the same key (as Claude Code's does) does not leak that key through the second slot. Because the inbound client is a real Codex CLI, the passthrough forwards its request headers verbatim (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) and swaps in **only** the selected pool account's `Authorization` bearer + `chatgpt-account-id`. See [Connect the Codex CLI](/guides/connect-codex-cli/#3-present-the-shunt-client-token-when-serverauth-is-set) for the full auth walkthrough.
 
+To sign each developer in through an organization identity provider with the Codex CLI's `gateway_oauth`, set `[server.auth]` `jwt_header` or `jwt_cookie`: the endpoint then also reads an IdP JWT from that header or cookie, which is stripped like every other client credential. See [Connect the Codex CLI](/guides/connect-codex-cli/#7-sign-in-through-your-identity-provider-gateway-oauth).
+
 ## WebSocket transport
 
 The three Responses paths accept both HTTP `POST` and authenticated WebSocket `GET` upgrades. Authentication completes before `101 Switching Protocols`. On a socket, `generate: false` warmups complete locally; live `response.create` frames reuse the HTTP account pool, force upstream streaming, and forward each SSE `data:` payload as a WebSocket text frame through the first terminal event. Replacing a turn or closing the socket cancels the active upstream body. Client frames and SSE events are limited to 4 MiB, sends apply bounded backpressure, and protocol/upstream failures use standalone `type: "error"` frames with only safe response metadata.
@@ -173,6 +175,28 @@ What changes for a routed request to a **non-ChatGPT** upstream:
 - **One credential, no failover.** A routed third party has no failover pool, so a 429 or 5xx relays verbatim with its `retry-after` instead of triggering rotation. The one pool-aware exception is an `xai_oauth` route with named accounts: it still sends the request once (an upstream failure is relayed, not rotated), but the credential is the first account in pool selection order whose login loads (the provider's `account`/`accounts` scope honored), and an account whose login fails to load is cooled down and skipped; with no named accounts it is `~/.shunt/xai-auth.json`.
 
 Matching is exact and case-sensitive with no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-6.1-sol`, and `~openai/gpt-latest` route as written. A route to another `chatgpt_oauth` provider instead keeps the full pool passthrough. Routes are read from the live config, so they take effect on reload.
+
+## Spend limits
+
+With [`[server.spend]`](/reference/configuration/#serverspend-optional) configured, the endpoint checks and meters the same per-principal caps as `/v1/messages`; without it nothing here applies. See [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md) for the full behavior.
+
+- **Checked first.** Every turn is checked before any upstream call, on the HTTP `POST` of all three Responses paths and on the Responses WebSocket. The principal is the static `[server.auth]` token name, the verified JWT identity (`identity_claim`, the email by default), or the anonymous principal when `[server.auth]` is off. This endpoint does not accept gateway-login sessions.
+- **Refusal.** An over-cap turn gets `429` with `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<epoch seconds>}}`, plus `retry-after`, `x-should-retry: false` and `x-codex-promo-message: <blocked_message>`. The promo header is sent only when `blocked_message` is plain ASCII; the text always rides in the message. The named cap is the reached one that resets last. With `fail_closed_on_error`, a capped principal whose spend state is unavailable is refused with the same type, no `resets_at` and no `retry-after`.
+- **What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, the Codex CLI does not retry this error. It renders its own "You've hit your usage limit … Try again at" text from `resets_at`, with the promo message when the header is present, and ignores the server message. That is Codex CLI behavior, so another version can differ.
+- **WebSocket.** A refused `response.create` gets one `{"type":"error","status":429,"error":{…},"headers":{…}}` frame carrying the same error plus `retry-after` and `x-codex-promo-message`. The socket stays open, each later turn is checked afresh, and `generate: false` warmups are not checked.
+- **Web search.** `/alpha/search` and its aliases are refused when over cap, and are never metered.
+- **Metering.** A completed turn is billed from the Responses `usage` into the counters `/v1/messages` writes, so one cap bounds both surfaces. Cached tokens bill at the cache-read rate and the rest of the input at the input rate; reasoning is inside the output and there is no cache write. A turn that ends without reported usage (a client close, a replaced turn, a broken stream) is billed a floor: the input estimated from the request body plus the output already delivered. A non-streamed 2xx JSON body is billed from its `usage` the same way; one that reports no input bills the estimated input instead.
+- **GPT pricing.** The built-in catalog has no GPT or Codex prices, so those models bill at the unknown-model rate (`$5 / $25 / $0.50 / $6.25` per million tokens, with one warning per model) until you add a row:
+
+```toml
+[[server.spend.pricing.overrides]]
+upstream = "codex"       # the endpoint's provider
+model = "gpt-6.1-sol"
+input = 1.00             # placeholder rates, USD per million tokens
+output = 8.00
+cache_read = 0.10
+cache_write = 1.00
+```
 
 ## What's different from `/v1/messages`
 

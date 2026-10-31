@@ -81,24 +81,34 @@ safeguard field and beta to `api.anthropic.com`. Verdicts arrived on
 pass leaves a present `safeguard_results` unchanged.
 
 **Response coding.** `response_coding::normalize` incrementally decodes native
-Anthropic gzip, zlib-wrapped deflate, and zstd responses before model alias
-rewriting, keepalive insertion, safeguard synthesis, metrics, and internal
-routing collectors. `proxy::post` re-encodes a marked client response with the
+Anthropic gzip, zlib-wrapped deflate, and zstd responses before the
+account-refusal judge, model alias rewriting, keepalive insertion, safeguard
+synthesis, metrics and spend metering, and internal routing collectors. `proxy::post` re-encodes a marked client response with the
 upstream's coding and flushes after each plaintext piece. This prevents a
 compressed SSE body from waiting in a plaintext frame accumulator. Internal
 judge and gated calls consume the decoded body. Gated replay retains the coding
 marker for client-side encoding. A committed mixed chain relays the decoded
 Anthropic winner in its existing unencoded SSE response. Informational, 204,
 205, and 304 responses are not decoded or marked; a coded 200 with an empty body
-still fails as truncated input.
+still fails as truncated input. A 206 is not decoded either, because its
+`Content-Range` counts the coded bytes; like an unsupported coding, it stays on
+the passthrough path. A decoded response loses
+`Content-Digest`, `Repr-Digest`, `Digest`, `Content-MD5` and `Accept-Ranges`,
+and a strong `ETag` becomes weak, because the client receives shunt's encoding
+of the body. The account-refusal read passes a 400 or 402 whose declared length
+exceeds its limit on unread, as it does for an uncompressed body.
 
 The outbound offer retains gzip, deflate, zstd, identity entries, and `*;q=0`
 exclusions in client order with their parameters. With no acceptable supported
-coding, shunt sends an explicit identity offer. If the client excludes identity in
-that case, shunt preserves its original offer for the existing passthrough
-path. Unsupported or stacked response codings stay on that path. Codec steps
+coding, shunt sends an explicit identity offer, also when the client excludes
+identity: a reply in a coding shunt cannot decode would reach the plaintext
+layers and the spend meter still encoded. A third-party upstream whose thinking signatures
+shunt wraps gets `identity` instead
+(`thinking_wrap::request_identity_encoding`). A response in an unsupported or
+stacked coding stays on the passthrough path. Codec steps
 run under bounded blocking-pool admission and emit decoded pieces of at most
-16 KiB. `Decoder` uses flate2's gzip wrapper and drains pending output before
+16 KiB. The zstd decoder does not allocate a window buffer above 8 MiB, the
+largest window RFC 9659 lets a "zstd" content-coding encoder require. `Decoder` uses flate2's gzip wrapper and drains pending output before
 requesting more input. At a member boundary, it starts a fresh gzip decoder
 when input remains or arrives later. A malformed or truncated coding body
 raises a body-stream error. See

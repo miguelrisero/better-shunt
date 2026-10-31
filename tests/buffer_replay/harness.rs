@@ -80,6 +80,7 @@ pub(crate) fn unvalidated_gated_config(tiers: &Tiers, router: &str) -> Config {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
     config.models = vec![
         ModelConfig {
@@ -151,6 +152,33 @@ judge_timeout_ms = 300
 /// One gated request, in the mode the test names.
 pub(crate) async fn post(gateway: &TestGateway, stream: bool) -> reqwest::Response {
     post_in_session(gateway, stream, Some(SESSION)).await
+}
+
+/// [`post`] carrying the caller's own upstream credential in both slots, the
+/// shape an `apiKeyHelper` produces.
+pub(crate) async fn post_with_caller_credential(
+    gateway: &TestGateway,
+    stream: bool,
+) -> reqwest::Response {
+    client()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-shunt-token", CLIENT_TOKEN)
+        .header("x-claude-code-session-id", SESSION)
+        .header("authorization", "Bearer caller-upstream-secret")
+        .header("x-api-key", "caller-upstream-secret")
+        .body(
+            json!({
+                "model": ROUTER_ID,
+                "max_tokens": 64,
+                "stream": stream,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "add a --json flag"}]}],
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap()
 }
 
 /// [`post`], with the session header set to `session` or left off entirely.

@@ -27,11 +27,13 @@ use super::{
 
 pub(crate) mod chain;
 pub(crate) mod gated;
+pub(crate) mod refusal;
 
 // Re-exported at the old path: the adapters and the committed streaming chain
 // classify statuses with these, and the split that moved the loop into `chain`
 // is not a change to where that rule is spelled.
 pub(crate) use chain::{failure_priority, is_advance_status};
+pub(crate) use refusal::{record_refusal, skip_refused_routes, AccountRefused};
 
 pub(super) async fn forward(
     state: AppState,
@@ -508,6 +510,10 @@ async fn forward_admitted(
         source: outcome.source.as_label(),
     });
 
+    // The route list is final here, so an upstream inside a refusal skip
+    // window drops out once, before either chain shape is built (#817).
+    let mut base_headers = base_headers;
+    let routes = skip_refused_routes(&state, routes, &mut base_headers);
     let first_route = routes
         .first()
         .expect("route chains are non-empty after resolution");
@@ -955,6 +961,24 @@ pub(crate) async fn check_inbound_auth(
         .iter()
         .any(|route| spend_gate::route_meters(state, route));
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
+        // Unauthenticated, the chain injects the pool's credential for whoever
+        // reaches the port, so refuse a page on another site: it can POST a
+        // "simple" cross-origin request (`text/plain`, no preflight), and the
+        // body is parsed as JSON whatever its `Content-Type`. Same rule as the
+        // Codex WebSocket handshake (`crate::headers::same_origin_or_non_browser`).
+        if injects_credential && !crate::headers::same_origin_or_non_browser(headers) {
+            return Err(Box::new(ForwardError {
+                message: "cross-origin browser request refused without inbound auth".to_string(),
+                response: Box::new(
+                    ShuntError::new(
+                        StatusCode::FORBIDDEN,
+                        "permission_error",
+                        "requests from a different browser origin require inbound authentication",
+                    )
+                    .into_response(),
+                ),
+            }));
+        }
         return Ok((
             forwarded,
             InboundContext {

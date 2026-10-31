@@ -177,7 +177,7 @@ async fn compressed_native_verdict_is_preserved() {
 #[tokio::test]
 async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
     let mut env = common::env_lock().await;
-    env.set(FIRST_PARTY_TOKEN_ENV, "test-token");
+    env.set(POOL_TOKEN_ENV, "fake-oauth-token");
     for (offer, expected) in [
         (
             "gzip, deflate;q=0.5, br, zstd;q=0.7",
@@ -192,7 +192,7 @@ async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
             .expect(1)
             .mount(&upstream)
             .await;
-        let gateway = gateway(first_party_config(upstream.uri())).await;
+        let gateway = gateway(pool_config(upstream.uri())).await;
         let response = request(&gateway, offer, false, false, false).await;
         assert!(!response.headers().contains_key("content-encoding"));
         assert_eq!(response.text().await.unwrap(), "{}");
@@ -209,25 +209,19 @@ async fn outbound_offers_drop_brotli_and_keep_supported_quality_values() {
 }
 
 #[tokio::test]
-async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
+async fn upstream_negotiation_asks_for_identity_without_a_supported_coding() {
     let mut env = common::env_lock().await;
-    env.set(FIRST_PARTY_TOKEN_ENV, "test-token");
+    env.set(POOL_TOKEN_ENV, "fake-oauth-token");
+    // The mock answers a `br` offer in `br`, which shunt cannot decode, so a
+    // forwarded `br` offer would fail the `content-encoding` check below.
     for (offer, expected_offer, expected_coding) in [
         (Some("gzip"), "gzip", Some("gzip")),
         (Some("identity"), "identity", None),
         (Some("br"), "identity", None),
         (None, "identity", None),
-        (Some("br, identity;q=0"), "br, identity;q=0", Some("br")),
-        (
-            Some("br, gzip;q=0, identity;q=0"),
-            "br, gzip;q=0, identity;q=0",
-            Some("br"),
-        ),
-        (
-            Some("br, gzip;q=0, *;q=0"),
-            "br, gzip;q=0, *;q=0",
-            Some("br"),
-        ),
+        (Some("br, identity;q=0"), "identity", None),
+        (Some("br, gzip;q=0, identity;q=0"), "identity", None),
+        (Some("br, gzip;q=0, *;q=0"), "identity", None),
     ] {
         let upstream = MockServer::start().await;
         Mock::given(method("POST"))
@@ -252,7 +246,7 @@ async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
             .expect(1)
             .mount(&upstream)
             .await;
-        let gateway = gateway(first_party_config(upstream.uri())).await;
+        let gateway = gateway(pool_config(upstream.uri())).await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let mut request = client.post(format!("{}/v1/messages", gateway.url))
             .json(&json!({"model":"native","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}));
@@ -270,7 +264,6 @@ async fn upstream_negotiation_respects_identity_and_unsupported_exclusions() {
         let bytes = response.bytes().await.unwrap();
         match expected_coding {
             Some("gzip") => assert_eq!(decoded("gzip", &bytes), "{}"),
-            Some("br") => assert_eq!(bytes, "opaque br bytes"),
             None => assert_eq!(bytes, "{}"),
             _ => unreachable!(),
         }
@@ -348,6 +341,65 @@ async fn compressed_refusal_keeps_status_retry_after_and_error_envelope() {
 }
 
 #[tokio::test]
+async fn compressed_400_keeps_the_client_coding_after_the_refusal_read() {
+    let _env = common::env_lock().await;
+    let body =
+        br#"{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .insert_header("content-encoding", "gzip")
+                .set_body_raw(compressed("gzip", body), "application/json"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = gateway(config(upstream.uri(), false)).await;
+    let response = request(&gateway, "gzip", false, false, false).await;
+    assert_eq!(response.status(), 400);
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    assert_eq!(
+        decoded("gzip", &response.bytes().await.unwrap()).as_bytes(),
+        body
+    );
+}
+
+#[tokio::test]
+async fn compressed_400_declared_over_the_limit_is_passed_on_unread() {
+    use futures_util::StreamExt as _;
+    let _env = common::env_lock().await;
+    let first = compressed("gzip", br#"{"type":"error""#);
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        axum::routing::post(move || {
+            let first = bytes::Bytes::from(first.clone());
+            async move {
+                let body = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(first)])
+                    .chain(futures_util::stream::pending());
+                axum::http::Response::builder()
+                    .status(400)
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "gzip")
+                    .header("content-length", 300 * 1024)
+                    .body(axum::body::Body::from_stream(body))
+                    .unwrap()
+            }
+        }),
+    );
+    let upstream = serve(app).await;
+    let gateway = gateway(config(upstream.url.clone(), false)).await;
+    // Reading this stalled body would hold the status for the 5 s refusal budget.
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request(&gateway, "gzip", false, false, false),
+    )
+    .await
+    .expect("a body declared over the limit is not read before the status");
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
 async fn malformed_compressed_stream_ends_with_a_body_error() {
     let _env = common::env_lock().await;
     for coding in ["gzip", "deflate", "zstd"] {
@@ -371,11 +423,17 @@ async fn malformed_compressed_stream_ends_with_a_body_error() {
                 .header("accept-encoding", coding)
                 .json(&json!({"model":"native","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hello"}]}))
                 .send().await;
-            if let Ok(response) = response {
-                assert!(
+            // hyper polls the body before it flushes the buffered headers, so an
+            // immediately invalid body can end the exchange before the status.
+            match response {
+                Ok(response) => assert!(
                     response.bytes().await.is_err(),
                     "invalid stream must not complete cleanly: {coding}"
-                );
+                ),
+                Err(error) => assert!(
+                    !error.is_connect() && !error.is_timeout(),
+                    "the gateway must take the request and then end it: {coding}: {error}"
+                ),
             }
         }
     }

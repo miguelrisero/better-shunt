@@ -15,10 +15,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::config::{AccountConfig, PoolConfig};
 
 mod request_stats;
+mod upstream_skip;
 
 pub use request_stats::AttemptOutcome;
 pub(crate) use request_stats::CountAttempt;
 use request_stats::RequestStats;
+pub(crate) use upstream_skip::UpstreamSkips;
 
 /// Credential-store namespace. Stable account ids only coalesce inside their
 /// own store family, so a Claude UUID can never collide with a ChatGPT account id.
@@ -30,6 +32,7 @@ pub enum StoreFamily {
     Kimi,
     Antigravity,
     Xai,
+    ChatgptPlan,
 }
 
 /// Stable physical-account identity used by every runtime state map.
@@ -643,6 +646,33 @@ pub struct AccountPool {
     /// not one per provider), so this override is too. `None` defers to the
     /// config file's own value; memory-only, cleared on restart.
     sort_by_reset_override: Mutex<Option<bool>>,
+    /// Skip windows for `api_key` upstreams that refused the account
+    /// (issue #817). Lives here because the pool is the process-lifetime state
+    /// every `AppState` snapshot shares across reloads; memory-only.
+    upstream_skips: UpstreamSkips,
+    /// When the usage poller last began a pass, and its interval. `None` until
+    /// the first pass, and for good when `usage_refresh_seconds` leaves the
+    /// poller off. Read by `GET /admin/api/pool` for the dashboard's
+    /// next-check countdown.
+    usage_poll: Mutex<Option<UsagePollSchedule>>,
+}
+
+/// The usage poller's cadence as of its latest pass (`crate::usage_poll`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsagePollSchedule {
+    /// The effective interval, after the 60-second floor.
+    pub interval_seconds: u64,
+    /// Unix seconds at which the latest pass began.
+    pub last_started_at: u64,
+}
+
+impl UsagePollSchedule {
+    /// Unix seconds at which the next pass is due. The poller skips missed
+    /// ticks rather than bursting, so a pass that overruns its interval moves
+    /// the real next pass later than this; the next pass then restamps it.
+    pub fn next_at(&self) -> u64 {
+        self.last_started_at.saturating_add(self.interval_seconds)
+    }
 }
 
 /// Why one account is not selectable for this request.
@@ -753,6 +783,25 @@ impl Drop for ReprobeReservation {
 impl AccountPool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The per-upstream skip windows that account-level refusals start.
+    pub(crate) fn upstream_skips(&self) -> &UpstreamSkips {
+        &self.upstream_skips
+    }
+
+    /// Record that a usage-poller pass began at `started_at` (Unix seconds).
+    pub fn note_usage_poll_started(&self, interval_seconds: u64, started_at: u64) {
+        *self.usage_poll.lock().expect("usage poll lock poisoned") = Some(UsagePollSchedule {
+            interval_seconds,
+            last_started_at: started_at,
+        });
+    }
+
+    /// The usage poller's cadence as of its latest pass, or `None` when no pass
+    /// has run (the poller is off, or has not started yet).
+    pub fn usage_poll_schedule(&self) -> Option<UsagePollSchedule> {
+        *self.usage_poll.lock().expect("usage poll lock poisoned")
     }
 
     /// Synchronize the upstream's current configured identities before an
@@ -1676,20 +1725,62 @@ impl AccountPool {
         reason: &'static str,
         scope: CooldownScope,
     ) {
+        let _ = self.set_cooldown(provider, account, duration, reason, scope, false);
+    }
+
+    /// [`Self::cooldown_scoped`] for an account-wide refusal that states its own
+    /// resume time: a window already running is never shortened, so a later,
+    /// shorter refusal on the same account leaves the longer deadline standing.
+    /// Returns the time left on the deadline that stands, which may exceed
+    /// `duration`.
+    pub fn cooldown_refusal(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        duration: Duration,
+        reason: &'static str,
+    ) -> Duration {
+        self.set_cooldown(
+            provider,
+            account,
+            duration,
+            reason,
+            CooldownScope::Account,
+            true,
+        )
+    }
+
+    fn set_cooldown(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        duration: Duration,
+        reason: &'static str,
+        scope: CooldownScope,
+        keep_longer: bool,
+    ) -> Duration {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = self.health_entry(&mut entries, account_key(provider, account));
         health.observed = true;
         health.enabled = !account.disabled;
-        match scope {
-            CooldownScope::Account => health.cooldown_until = Some(Instant::now() + duration),
-            CooldownScope::Fable => health.cooldown_until_fable = Some(Instant::now() + duration),
-        }
+        let now = Instant::now();
+        let until = now + duration;
+        let slot = match scope {
+            CooldownScope::Account => &mut health.cooldown_until,
+            CooldownScope::Fable => &mut health.cooldown_until_fable,
+        };
+        let standing = match (keep_longer, *slot) {
+            (true, Some(running)) => running.max(until),
+            _ => until,
+        };
+        *slot = Some(standing);
         // Any failover-worthy failure restarts the storm-control ramp: when the
         // account comes back it re-enters slow start instead of inheriting the
         // allowance it had grown before failing.
         health.ramp_allowance = 0;
         drop(entries);
         crate::metrics::record_pool_rotation(provider, reason);
+        standing.saturating_duration_since(now)
     }
 
     /// Cool down one `(account, model)` pair: selection for `model` treats the
@@ -3458,6 +3549,15 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
+        .as_secs()
+}
+
+/// Seconds since the Unix epoch at `lasts` from now, for the `*_until_epoch_secs`
+/// log fields. A clock before the epoch reads as 0.
+pub(crate) fn epoch_secs_after(lasts: Duration) -> u64 {
+    (SystemTime::now() + lasts)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
         .as_secs()
 }
 
@@ -6904,6 +7004,30 @@ mod tests {
                 "account-wide cooldown must defer {model}"
             );
         }
+    }
+
+    #[test]
+    fn refusal_cooldown_keeps_the_longer_window() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        let remaining = || {
+            pool.snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
+                .cooldown_secs_remaining
+                .expect("cooling")
+        };
+        pool.cooldown_refusal("anthropic", &account, Duration::from_secs(1000), "refusal");
+        let standing =
+            pool.cooldown_refusal("anthropic", &account, Duration::from_secs(100), "refusal");
+        assert!(
+            standing > Duration::from_secs(900),
+            "the returned window is the one that stands"
+        );
+        assert!(
+            remaining() > 900,
+            "a shorter refusal must not shorten the window"
+        );
+        pool.cooldown_refusal("anthropic", &account, Duration::from_secs(5000), "refusal");
+        assert!(remaining() > 4900, "a longer refusal extends the window");
     }
 
     #[test]

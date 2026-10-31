@@ -23,6 +23,7 @@ use axum::response::IntoResponse;
 
 use crate::{error::ShuntError, routing::Route, server::AppState};
 
+use super::refusal::AccountRefused;
 use super::{
     dispatch, headers_for_route, is_passthrough_route, provider_origin, stamp_gateway_headers,
     InboundContext, RouterStamp,
@@ -221,7 +222,11 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     &stamped_model,
                     router_stamp,
                 );
-                if !is_advance_status(status) {
+                // An account-level refusal advances like a 429 although its
+                // status is terminal; the adapter judged the body and logged
+                // the refusal once, with its skip window (#817).
+                let refused = response.extensions().get::<AccountRefused>().is_some();
+                if !is_advance_status(status) && !refused {
                     finish(&provider, status);
                     return Ok(ChainSuccess {
                         status,
@@ -229,12 +234,14 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                         target,
                     });
                 }
-                tracing::warn!(
-                    provider = %provider,
-                    model = %target.model,
-                    status = status.as_u16(),
-                    "upstream response triggered failover advance"
-                );
+                if !refused {
+                    tracing::warn!(
+                        provider = %provider,
+                        model = %target.model,
+                        status = status.as_u16(),
+                        "upstream response triggered failover advance"
+                    );
+                }
                 remember_failure(
                     &mut remembered,
                     status,
@@ -400,6 +407,7 @@ mod tests {
     use axum::http::StatusCode;
 
     use super::{log_before_headers_advance, log_error_advance};
+    use crate::{accounts::UpstreamSkips, proxy::failover::record_refusal};
 
     struct BufferWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -496,5 +504,63 @@ mod tests {
             logs.contains("upstream_message=\"zzdistinctzz\""),
             "got: {logs}"
         );
+    }
+
+    /// A recorded refusal logs one warning naming the upstream, the refusal
+    /// kind, and when its skip window ends, and starts that window (#817).
+    #[test]
+    fn a_recorded_refusal_logs_one_warning_with_its_kind_and_expiry() {
+        let skips = UpstreamSkips::default();
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let logs = capture(|| {
+            record_refusal(
+                Some(&skips),
+                "primary",
+                "model-a",
+                StatusCode::BAD_REQUEST,
+                "spend_limit",
+                std::time::Duration::from_secs(600),
+            );
+        });
+
+        assert_eq!(logs.matches("WARN").count(), 1, "got: {logs}");
+        for field in ["provider=primary", "model=model-a", "status=400"] {
+            assert!(logs.contains(field), "missing {field}; got: {logs}");
+        }
+        assert!(logs.contains("refusal=\"spend_limit\""), "got: {logs}");
+        let until: u64 = logs
+            .split("skip_until_epoch_secs=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no expiry field; got: {logs}"));
+        assert!(
+            (before + 600..=before + 601).contains(&until),
+            "expiry {until} is not 600 s after {before}"
+        );
+        assert!(skips.is_skipped("primary"));
+    }
+
+    /// The positive twin: a passthrough refusal still logs once, but records no
+    /// window and states no expiry.
+    #[test]
+    fn a_passthrough_refusal_logs_once_and_records_no_window() {
+        let logs = capture(|| {
+            record_refusal(
+                None,
+                "primary",
+                "model-a",
+                StatusCode::PAYMENT_REQUIRED,
+                "billing",
+                std::time::Duration::from_secs(600),
+            );
+        });
+
+        assert_eq!(logs.matches("WARN").count(), 1, "got: {logs}");
+        assert!(logs.contains("refusal=\"billing\""), "got: {logs}");
+        assert!(!logs.contains("skip_until_epoch_secs"), "got: {logs}");
     }
 }
