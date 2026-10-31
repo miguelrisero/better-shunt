@@ -3,6 +3,9 @@ title: 提供方
 description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容 Anthropic 的后端。
 ---
 
+Codex 目录中的 `gpt-6.1-terra` 支持原生工具搜索。请在 `codex` 提供商上配置准确的模型 ID；预览版或其他次版本不会自动继承此能力。
+
+
 提供方是一个**名称 → 配置的映射**:一个新的上游只不过是又一个 `[providers.<name>]` 表 —— 无需改动代码。适配器类型如下:
 
 - **`kind = "anthropic"`** —— 上游讲 Anthropic Messages API。shunt 将请求透传,可选择注入一个不同的 API 密钥。

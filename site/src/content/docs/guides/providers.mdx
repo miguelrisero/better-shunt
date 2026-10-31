@@ -3,6 +3,9 @@ title: Providers
 description: The built-in providers and how to add any Anthropic-compatible backend with a TOML table.
 ---
 
+Codex catalog note: `gpt-6.1-terra` supports native tool search. Configure its exact model ID on the `codex` provider; similarly named preview or future-minor IDs do not inherit that capability.
+
+
 Providers are a **name → config map**. Anthropic-compatible and Responses-compatible upstreams can be added with configuration; provider-specific transports use native adapters:
 
 - **`kind = "anthropic"`** — the upstream speaks the Anthropic Messages API. shunt passes the request through, optionally injecting a different API key.

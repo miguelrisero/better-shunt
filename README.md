@@ -1,5 +1,7 @@
 # shunt
 
+Codex catalog note: `gpt-6.1-terra` supports native tool search. Configure its exact model ID on the `codex` provider; similarly named preview or future-minor IDs do not inherit that capability.
+
 Offline credential import: `shunt import opencodex --dry-run` previews compatible API keys and Cursor/Command Code access tokens. Exports create new private snapshots without changing existing settings or copying refresh tokens. See [credential import](docs/credential-import.md).
 
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)

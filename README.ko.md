@@ -1,5 +1,7 @@
 # shunt
 
+Codex 카탈로그의 `gpt-6.1-terra`는 네이티브 도구 검색을 지원합니다. `codex` 공급자에 정확한 모델 ID를 설정하세요. 미리 보기나 다른 마이너 버전에는 이 기능을 자동으로 적용하지 않습니다.
+
 오프라인 자격 증명 가져오기: `shunt import opencodex --dry-run`으로 호환 API 키와 Cursor/Command Code 액세스 토큰을 미리 확인합니다. 기존 설정이나 갱신 토큰을 변경·복사하지 않고 새 비공개 스냅샷을 생성합니다. [가져오기 안내(영문)](docs/credential-import.md)를 참고하세요.
 
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)

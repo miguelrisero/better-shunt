@@ -2448,7 +2448,7 @@ fn model_supports_tool_search(model: &str) -> bool {
     // exactly: the catalog lists no gpt-6 family, only these slugs.
     matches!(
         model,
-        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol"
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra"
     )
 }
 
@@ -12849,6 +12849,9 @@ target = "judge-alias"
         assert!(config.native_tool_search("codex", "gpt-6-sol"));
         assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
         assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
+        // The Codex 0.165.0 catalog advertises this exact Terra slug.
+        assert!(config.native_tool_search("codex", "gpt-6.1-terra"));
+        assert!(config.native_tool_search("openai", "gpt-6.1-terra"));
         assert!(config.native_tool_search("codex", "gpt-6-luna"));
         // Codex catalog slug `gpt-6.1-sol` (rust-v0.159.3, same flag).
         assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
@@ -12861,6 +12864,8 @@ target = "judge-alias"
             "gpt-6-sol-preview",
             "gpt-6.1-sol-preview",
             "gpt-6.10-sol",
+            "gpt-6.1-terra-preview",
+            "gpt-6.10-terra",
             "gpt-6-luna[1m]",
             "gpt-6.1-sol-preview",
             "gpt-6.1-sol[1m]",

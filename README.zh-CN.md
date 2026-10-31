@@ -1,5 +1,7 @@
 # shunt
 
+Codex 目录中的 `gpt-6.1-terra` 支持原生工具搜索。请在 `codex` 提供商上配置准确的模型 ID；预览版或其他次版本不会自动继承此能力。
+
 离线凭据导入：`shunt import opencodex --dry-run` 可预览兼容 API 密钥和 Cursor/Command Code 访问令牌。导出会创建新的私有快照，不修改现有设置，也不复制刷新令牌。参见[导入指南（英文）](docs/credential-import.md)。
 
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
