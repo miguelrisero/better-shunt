@@ -6874,6 +6874,16 @@ mod tests {
         }
     }
 
+    fn advance_account_directory_mtime(path: &std::path::Path) {
+        // Pool discovery is cached by directory mtime. Back-to-back fixture
+        // writes can share one filesystem clock tick; drive invalidation
+        // explicitly instead of assuming that creating files advances it.
+        let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_modified(modified + std::time::Duration::from_secs(1));
+        std::fs::File::open(path).unwrap().set_times(times).unwrap();
+    }
+
     fn claude_oauth_config() -> Config {
         let mut config = Config::default();
         config.providers.get_mut("anthropic").unwrap().auth = AuthMode::ClaudeOauth;
@@ -6906,6 +6916,7 @@ mod tests {
         assert!(provider.resolve_pool_accounts().await.unwrap().is_empty());
         std::fs::write(store::account_path("primary"), "{}").unwrap();
         std::fs::write(store::account_path("backup"), "{}").unwrap();
+        advance_account_directory_mtime(&dir);
         let accounts = provider.resolve_pool_accounts().await.unwrap();
         assert_eq!(
             accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
@@ -13017,6 +13028,7 @@ target = "judge-alias"
         assert!(provider.resolve_pool_accounts().await.unwrap().is_empty());
         std::fs::write(store::account_path("primary"), "{}").unwrap();
         std::fs::write(store::account_path("backup"), "{}").unwrap();
+        advance_account_directory_mtime(&dir);
         let accounts = provider.resolve_pool_accounts().await.unwrap();
         assert_eq!(
             accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
