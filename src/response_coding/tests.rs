@@ -182,6 +182,30 @@ async fn invalid_and_truncated_bodies_error_without_panicking() {
 }
 
 #[tokio::test]
+async fn zstd_frames_of_unknown_size_needing_more_than_an_8_mib_window_fail() {
+    use std::io::Write as _;
+    let frame = |window_log: u32| {
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+        encoder
+            .set_parameter(zstd::stream::raw::CParameter::WindowLog(window_log))
+            .unwrap();
+        encoder
+            .write_all(b"event: message_start\ndata: {}\n\n")
+            .unwrap();
+        Bytes::from(encoder.finish().unwrap())
+    };
+    for (window_log, decodes) in [(23, true), (24, false)] {
+        let bytes = frame(window_log);
+        let input = stream::once(async { Ok::<_, Infallible>(bytes) });
+        assert_eq!(
+            collected(decode(input, UpstreamCoding::Zstd)).await.is_ok(),
+            decodes,
+            "window log {window_log}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn upstream_body_errors_propagate() {
     let input = stream::iter([Err::<Bytes, _>(io::Error::other("upstream body failed"))]);
     let error = collected(decode(input, UpstreamCoding::Gzip))
@@ -302,12 +326,14 @@ fn accept_encoding_keeps_order_and_quality_values() {
         headers[header::ACCEPT_ENCODING],
         "gzip;q=0, zstd;q=0.7, deflate;q=0, GZIP;q=1"
     );
-    for value in ["identity", "br", "unknown, br", "*", "gzip;q=0"] {
-        headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
-        filter_accept_encoding(&mut headers);
-        assert_eq!(headers[header::ACCEPT_ENCODING], "identity");
-    }
+    // Without a supported coding the upstream is asked for identity, even when
+    // the client excludes it.
     for value in [
+        "identity",
+        "br",
+        "unknown, br",
+        "*",
+        "gzip;q=0",
         "br, identity;q=0",
         "br, *;q=0",
         "br, gzip;q=0, identity;q=0",
@@ -317,7 +343,7 @@ fn accept_encoding_keeps_order_and_quality_values() {
     ] {
         headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
         filter_accept_encoding(&mut headers);
-        assert_eq!(headers[header::ACCEPT_ENCODING], value);
+        assert_eq!(headers[header::ACCEPT_ENCODING], "identity", "{value}");
     }
     headers.insert(
         header::ACCEPT_ENCODING,
@@ -355,6 +381,41 @@ async fn bodyless_statuses_stay_unmarked_but_empty_success_is_truncated() {
         .body(reqwest::Body::from(Vec::new()))
         .unwrap();
     assert!(normalize(response.into()).bytes().await.is_err());
+}
+
+#[tokio::test]
+async fn byte_validators_do_not_outlive_the_upstream_bytes() {
+    let validators = ["content-digest", "repr-digest", "digest", "content-md5"];
+    for (etag, expected) in [("\"v1\"", "W/\"v1\""), ("W/\"v1\"", "W/\"v1\"")] {
+        let mut upstream = Response::builder()
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::ETAG, etag)
+            .header(header::ACCEPT_RANGES, "bytes");
+        for name in validators {
+            upstream = upstream.header(name, "sha-256=:AAAA:");
+        }
+        let body = reqwest::Body::from(compressed(UpstreamCoding::Gzip, b"plain"));
+        let upstream = normalize(upstream.body(body).unwrap().into());
+        for name in validators.into_iter().chain(["accept-ranges"]) {
+            assert!(!upstream.headers().contains_key(name), "{name}");
+        }
+        assert_eq!(upstream.headers()[header::ETAG], expected);
+        assert_eq!(upstream.bytes().await.unwrap(), "plain");
+    }
+    let bytes = compressed(UpstreamCoding::Gzip, b"plain");
+    let partial = Response::builder()
+        .status(206)
+        .header(header::CONTENT_ENCODING, "gzip")
+        .header(
+            header::CONTENT_RANGE,
+            format!("bytes 0-{}/*", bytes.len() - 1),
+        )
+        .body(reqwest::Body::from(bytes.clone()))
+        .unwrap();
+    let partial = normalize(partial.into());
+    assert!(partial.extensions().get::<UpstreamCoding>().is_none());
+    assert_eq!(partial.headers()[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(partial.bytes().await.unwrap(), bytes);
 }
 
 #[tokio::test]

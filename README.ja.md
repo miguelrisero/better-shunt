@@ -17,7 +17,7 @@
 
 この名前が仕組みそのものを表しています。電気回路や鉄道の *shunt*（分岐器）が、選んだ一部の流れを並行した経路へ振り分けるのと同じように、ここではマッピングされたモデルの推論を別のプロバイダーへ振り分けつつ、Claude Code のツールやスキルはそのまま保たれます。
 
-OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、Zhipu、MiniMax 中国版、OpenCode Zen、Gemini、Antigravity、Anthropic パススルーが標準搭載されており、その多くはすでに契約済みのサブスクリプションをそのまま再利用します。Anthropic Messages 互換のバックエンドであれば設定テーブルを 1 つ書くだけで、コード変更なしに追加できます。[プロバイダー](#プロバイダー)を参照してください。
+OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、Zhipu、MiniMax 中国版、OpenCode Zen、Cheaper Inference、Gemini、Antigravity、Anthropic パススルーが標準搭載されており、その多くはすでに契約済みのサブスクリプションをそのまま再利用します。Anthropic Messages 互換のバックエンドであれば設定テーブルを 1 つ書くだけで、コード変更なしに追加できます。[プロバイダー](#プロバイダー)を参照してください。
 
 プロンプトキャッシュはクライアントの Anthropic TTL 設定を維持します。ストリーミング
 メトリクスで 5m/1h の書き込み内訳を確認でき、Gemini も Codex と同様にキャッシュ済み
@@ -143,7 +143,24 @@ codex-fallback = "gpt-6.1-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP 経由の Google Antigravity バックエンド、`~/.shunt/antigravity-auth.json`（`shunt login antigravity`）を使用（または `shunt login antigravity --name` で `~/.shunt/accounts/antigravity` 以下に名前付きアカウントを作成し `accounts = [...]` で選択） |
 | `antigravity-cli` | `antigravity_cli` | なし（ローカル CLI） | **非推奨。** ローカルの `agy` バイナリ — サブプロセス経由で同じバックエンドを利用。上記の `antigravity` に置き換えられました |
 
-順序付きの `[[upstreams]]` エントリーはこれに加えて `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` のプリセットも受け付け、各バックエンドの `kind`、`base_url`、デフォルト認証を補完します。
+順序付きの `[[upstreams]]` エントリーはこれに加えて `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`cheaperinference`、`chatgpt-plan` のプリセットも受け付け、各バックエンドの `kind`、`base_url`、デフォルト認証を補完します。
+
+**ChatGPT プラン（Sign in with ChatGPT）。** `chatgpt-plan` プリセットは、`api.openai.com/v1/responses` 上の OpenAI「Sign in with ChatGPT」トークン共有プレビューを通じて ChatGPT プランを消費します。上の `codex` プロバイダーとは別物です。`shunt login chatgpt-plan --name <account>` でサインインし（`127.0.0.1:1455` へのブラウザーコールバック、リモートホストではコールバック URL の貼り付け）、`provider = "chatgpt-plan"` を指定した順序付きの `[[upstreams]]` エントリーを追加し（プリセットが `kind`、`base_url`、`auth = "chatgpt_plan_oauth"` を補完します）、以下のようにモデルを割り当てます。名前付きの複数アカウントはプールとなり、1 つがプランの使用量上限に達するとローテーションします。`shunt logout chatgpt-plan --name <account>` は 1 つのアカウントを失効させて消去します。プレビューは一部のリクエストパラメーターを拒否し、出力開始後に使用量上限に達した場合はローテーションせずストリームが終了します。詳しくは [ChatGPT プランのガイド](https://shunt.sh/ja/guides/chatgpt-plan/)を参照してください。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
+
+[[upstreams]]
+name = "chatgpt-plan"
+provider = "chatgpt-plan" # preset: kind, base_url, and auth = "chatgpt_plan_oauth"
+
+[[models]]
+id = "gpt-6.1-sol"
+[models.upstream_model]
+chatgpt-plan = "gpt-6.1-sol"
+```
 
 プロバイダーごとのセットアップ、モデル id、注意点は[プロバイダー](https://shunt.sh/ja/guides/providers/)にまとまっています。Cursor のエージェントモードのプレフィックス（[Cursor](https://shunt.sh/ja/providers/cursor/)）、Antigravity の 2 つのトランスポートと `kind = "antigravity"` の移行（[Antigravity](https://shunt.sh/ja/providers/antigravity/)）もそこにあります。
 
@@ -164,6 +181,7 @@ codex-fallback = "gpt-6.1-sol"
 | MiniMax | `https://api.minimax.io/anthropic` | [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) を参照 |
 | MiniMax 中国版 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`、`gpt-6-astra` — キュレーションされたクロスベンダーカタログ。`x-api-key` を読む |
+| Cheaper Inference | `https://api.cheaperinference.com` | `gpt-5.4`、`deepseek-v4-flash`、`glm-5.3` — Messages エンドポイントを備えた OpenAI 互換ゲートウェイ |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
@@ -199,18 +217,18 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 
 | 機能 | 有効化 | ドキュメント |
 | :-- | :-- | :-- |
-| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避、プールがキャップで尽きたときにアカウントを除外して次のアップストリームへフェイルオーバーするウィンドウ別ハードキャップ（`max_utilization*`） | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/anthropic-multi-account/) |
-| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ、プールがキャップで尽きたときにアカウントを除外して次のアップストリームへフェイルオーバーするウィンドウ別ハードキャップ（`max_utilization*`） | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/codex-multi-account/) |
+| Anthropic マルチアカウントプーリング — セッションをアカウントに割り当て、そのアカウントが応答できないとき、または 60 秒間クォータに近い状態が続いたときに移すセッションバインディング（配置方式は `[server.pool] assignment` で選択。既定は `spread`、ほかに `soonest_weekly_reset`）、クォータを考慮したローテーション、予測的回避、プールがキャップで尽きたときにアカウントを除外して次のアップストリームへフェイルオーバーするウィンドウ別ハードキャップ（`max_utilization*`） | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/anthropic-multi-account/) |
+| Codex マルチアカウントプーリング — 同じセッションバインディング、`x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ、プールがキャップで尽きたときにアカウントを除外して次のアップストリームへフェイルオーバーするウィンドウ別ハードキャップ（`max_utilization*`） | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/codex-multi-account/) |
 | 学習済みプリフィルルーティング (`type = "prefill_router"`) | コンパイル時のオプトイン — `cargo build --release --features prefill-router`（**既定で無効**。リリースバイナリと Homebrew formula は `--features ui` でビルドされるため含まれません）。加えて `type = "prefill_router"` を指定した `[models.router]` テーブル、ディスク上のルーターチェックポイント、`torch` と `transformers` が入った Python 環境が必要です | [リファレンス](https://shunt.sh/ja/reference/configuration/#type--prefill_router) |
 | 受信 Codex エンドポイント — **Codex CLI** 自体を HTTP/SSE または WebSocket で shunt に向けて同じプールに載せ、モデル単位のルーティングも選択可能 | `[server.codex_endpoint]` | [ガイド](https://shunt.sh/ja/guides/inbound-codex-endpoint/) |
 | LLM ジャッジによるルーティング (`type = "llm_classifier"`、`type = "composite"`) — ジャッジモデルが `classify_trigger` に従ってターンごとに宛先を選びます。その応答がクライアントに渡ることはありません | `type = "llm_classifier"`（`mode = "capability"` または `"custom"`）か `type = "composite"` を指定した `[models.router]` テーブル、あるいは classifier 形式の `[models.subagents]` オーバーレイ | [リファレンス](https://shunt.sh/ja/reference/configuration/#type--llm_classifier) |
 | 完成したターンを判定するルーティング (`mode = "escalation"`、`type = "advisor"`) — 応答を先に作って手元に留め、ジャッジかレビュアーが完成したターンを判定してから送ります。ストリーミングの呼び出し元には判定のあとでそのターンが再生されます | `type = "llm_classifier"` と `mode = "escalation"`、または `type = "advisor"` を指定した `[models.router]` テーブル | [リファレンス](https://shunt.sh/ja/reference/configuration/#type--advisor) |
-| 検証専用のインバウンド JWT — 自社の ID プロバイダーが発行した JWT をその JWKS で検証して受け入れる。shunt は何も発行しないため、クライアントはファーストパーティモードのまま | 1 つ以上の `[[server.auth.jwt]]` エントリ（それぞれ `issuer`、`audience`、および `email_domains` または `allowed_emails`）を備えた `[server.auth]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverauthjwtオプション) |
+| 検証専用のインバウンド JWT — 自社の ID プロバイダーが発行した JWT をその JWKS で検証して受け入れる。shunt は何も発行しないため、クライアントはファーストパーティモードのまま | 1 つ以上の `[[server.auth.jwt]]` エントリ（それぞれ `issuer`、`audience`、および `email_domains` または `allowed_emails`。GitHub Actions のようなワークロード ID は代わりに `require` / `subject_prefix` と `identity_claim`）を備えた `[server.auth]`。インバウンド Codex エンドポイント（`[server.codex_endpoint]`）では `jwt_header` / `jwt_cookie` が Codex CLI `gateway_oauth` のトークンを運ぶ | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverauthjwtオプション) |
 | Claude アプリ向けゲートウェイログイン — OAuth デバイスフロー、managed settings、ユーザー単位のポリシー、Claude Desktop bootstrap（`GET /user/bootstrap`） | `public_url`、32 バイト以上の JWT シークレット、静的ユーザーまたは `[server.gateway.oidc]` を備えた `[server.gateway]`。Desktop bootstrap には `template` パスを指定した `[server.gateway.desktop_bootstrap]` も必要 | [ガイド](https://shunt.sh/ja/guides/gateway-login/) |
 | ゲートウェイテレメトリの受信 — 管理対象クライアントの OTLP をそのままリレー | 構成済みの `[server.gateway]` と、`forward_to` が空でない `[server.gateway.telemetry]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#servergatewaytelemetryオプション) |
 | 管理 Web 画面 — アカウントと使用量のダッシュボード、ブラウザーからのプロビジョニング | `[server.admin]` に管理者資格情報（`tokens_env`、`tokens_file`、または `write_keys` エントリ。`read_keys` エントリだけでもダッシュボードは読み取り専用で起動します — サインインと全ての閲覧はできますが、プロビジョニングには write が必要です）を自分で書くか、**または** `shunt dashboard setup` がテーブルの作成とトークンの発行をまとめて行います。ただしテーブルの作成とトークンの発行が起きるのは `[server.admin]` が存在しないときだけで、すでにある場合は既存の資格情報をそのままにし、欠けている `[server.oauth_usage]` だけを追加します。ダッシュボード本体は `--features ui` ビルドだけが埋め込むバンドルから配信されます — ビルド済みリリースバイナリと Homebrew formula には含まれ、素の `cargo build`/`cargo install` には含まれません | [ガイド](https://shunt.sh/ja/guides/admin-remote-provisioning/) |
 | プールアカウント制御 — アカウントの一時停止、または利用可能なアカウントをクォータのリセットが最も早い順に並べ替え — ダッシュボードまたは admin API からランタイムに、`shunt.toml` の編集や再起動なしで | `[server.admin]` write 資格情報。`sort_by_reset` には対応する `[server.pool]` 設定キーもある | [ガイド](https://shunt.sh/ja/guides/pool-account-controls/) |
-| 支出上限 — Admin API で保存する組織単位・ユーザー単位の上限を、ゲートウェイが費用を負担する `/v1/messages` リクエストに適用 — passthrough または `noop` ルートのみのチェーンは適用も計測もされない（`429 billing_error`、プリンシパルごとの `anthropic-ratelimit-*` ヘッダー、`GET /v1/organizations/spend_limits/effective`）。`[server.spend.pricing]` で、メーターがリクエストの料金計算に使う乗数とアップストリーム・モデル単位の料金オーバーライドを設定。受信 Codex エンドポイントにはまだ適用しません（[#733](https://github.com/pleaseai/shunt/issues/733)） | `[server.admin]`（管理者資格情報が必須: `tokens_env`、`tokens_file`、または `write_keys`/`read_keys` エントリ — read 階層は GET のみ処理） + `[server.spend]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverspendオプション) |
+| 支出上限 — Admin API で保存する組織単位・ユーザー単位の上限を、ゲートウェイが費用を負担する `/v1/messages` リクエストに適用 — passthrough または `noop` ルートのみのチェーンは適用も計測もされない（`429 billing_error`、プリンシパルごとの `anthropic-ratelimit-*` ヘッダー、`GET /v1/organizations/spend_limits/effective`） — 受信 Codex エンドポイント（HTTP と WebSocket）にも適用し、上限を超えたターンは `429 usage_limit_reached` を受け、同じ上限に合算される。`[server.spend.pricing]` で、メーターがリクエストの料金計算に使う乗数とアップストリーム・モデル単位の料金オーバーライドを設定（GPT/Codex モデルには組み込み料金がないため、オーバーライド行を追加しない限り不明モデルのレートで課金） | `[server.admin]`（管理者資格情報が必須: `tokens_env`、`tokens_file`、または `write_keys`/`read_keys` エントリ — read 階層は GET のみ処理） + `[server.spend]` | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverspendオプション) |
 | クライアント向け使用量エンドポイント — `GET /usage` がサニタイズ・集計されたプールの余裕を返す | `[server.usage]`。加えて `[server.auth]`（クライアントトークンは `tokens_env`（既定値 `SHUNT_CLIENT_TOKENS`）または `[[server.auth.jwt]]` で提供）または `[server.gateway]`（ゲートウェイログイン）が必要 | [リファレンス](https://shunt.sh/ja/reference/configuration/#serverusageオプション) |
 | Claude Code CLI ネイティブ使用量バー — `GET /api/oauth/usage` を提供 | `[server.oauth_usage]`。ループバック以外の bind では `[server.auth]`（クライアントトークンは `tokens_env`（既定値 `SHUNT_CLIENT_TOKENS`）または `[[server.auth.jwt]]` で提供）または `[server.gateway]` も必要 | [リファレンス（英語）](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
 | アップストリームのステータスポーリング — Statuspage の指標をメトリクスとして、また `--features ui` ビルドではダッシュボードにも表示 | `[[server.status.sources]]` を 1 つ以上含む `[server.status]` | [リファレンス（英語）](https://shunt.sh/reference/configuration/#serverstatus-optional) |
@@ -245,13 +263,13 @@ Claude Code はすべてのターンを Anthropic API へ送信します。`shun
 
 Claude Code は `ANTHROPIC_BASE_URL` の背後に**ファーストクラスのゲートウェイ契約**を公開しています。`shunt` は、これまでの Claude Code プロキシが頼ってきた「サブエージェントのシステムプロンプトをハッシュする」という脆いヒューリスティックではなく、この契約を実装します。
 
-- [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — エンドポイント、転送すべきヘッダー・ボディフィールドと消費すべきフィールド、機能のパススルー、アトリビューションを定めた API 契約です。稼働中のゲートウェイは `GET /protocol` で機械可読な仕様を提供します。Claude Code はクライアントバージョンと会話のフィンガープリントをシステムプロンプトの先頭に付加しますが、それを抑制するかは `CLAUDE_CODE_ATTRIBUTION_HEADER=0` による開発者の判断であるため、shunt はそのアトリビューションブロックをそのまま転送します。
+- [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — エンドポイント、転送すべきヘッダー・ボディフィールドと消費すべきフィールド、機能のパススルー、アトリビューションを定めた API 契約です。稼働中のゲートウェイは `GET /protocol` で機械可読な仕様を提供します。Claude Code はクライアントバージョンと会話のフィンガープリントをシステムプロンプトの先頭に付加しますが、それを抑制するかは `CLAUDE_CODE_ATTRIBUTION_HEADER=0` による開発者の判断であるため、shunt はそのアトリビューションブロックをそのまま転送します。抑制した場合、shunt はサブスクリプション OAuth トークンで Anthropic ルートに送られる、マーカーのない Claude Code リクエストに Claude Code の identity を復元し（`count_tokens` は除く）、サイドクエリがヘッダーなしの client-shape 429 で拒否されることを防ぎます。
 - [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code は起動時に `GET /v1/models?limit=1000` を照会し（`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` でオプトイン）、返されたモデルを `/model` ピッカーに追加します。shunt はキュレーションされた `[[models]]` エントリーに加え、`auto_include_builtin_models` が `true` の間は呼び出し元のライブカタログを返します。この取得は `server.default_provider` が Anthropic 種別のときのみ行われ、そうでない場合・認証情報がない場合・取得に失敗した場合は組み込みスナップショットにフォールバックします。**制約:** `id` が `claude`/`anthropic` で始まらないエントリーは無視されるため、Claude 系以外のモデルはエイリアスを作るか手動で追加する必要があります。[モデルディスカバリー](https://shunt.sh/ja/guides/model-discovery/)を参照してください。
 - **ゲートウェイヒントヘッダー**（`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`） — 最近の Claude Code は各リクエストを `x-claude-code-*` ヘッダーで説明します。shunt はそのうち 5 つ — セッション id、委譲エージェント id、リクエストクラス（`main`、`subagent`、`workflow`、`compaction`、`auxiliary`）、エージェントタイプ、コンテキストコンパクション直後の最初のターンにだけ一度送られるフラグ — をルーティングコンテキストとして読み取り、`GET /protocol` はそれらを消費ヘッダーとして列挙します。エージェント id ヘッダーはこの変数のゲート対象では**ありません**。そのためデフォルトのデプロイでも、`Task` サブエージェントはクライアントを変更することなく、親セッションの dwell やエスカレーションから独立した自分専用の[ステージルーター](https://shunt.sh/ja/guides/stage-router/)ティアピンを持ちます。クライアントで `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` を設定すると残りの 4 つも送信され、リクエストクラスがエージェント id のフォールバックより優先されるようになり、コンパクション後のターンを強力なティアに保てます。
 
 - [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` は組み込みエイリアスを置き換えずに、ゲートウェイ経由のエントリーを `/model` ピッカーへ追加します。ID は検証を通らないため、ゲートウェイが受け付ける文字列なら何でも使えます。上記のディスカバリー制約があるため、これが **Claude 系以外のモデルを選ぶ主な方法**です（例: `gpt-6.1-sol`）。
 - **ツール検索**（`ENABLE_TOOL_SEARCH`） — Claude Code は MCP/LSP のツールスキーマを遅延させ、必要になったときに開示してコンテキストを回収します。shunt は Anthropic のファーストパーティホストではないため、自分でオプトインしない限りこの機能は**無効**のままです。オプトイン後に遅延が維持されるかは設定だけでなくアップストリームが決めます。`claude*` と `anthropic/*` の id はプロトコルをバイト単位で維持し、それ以外の id はホストが拒否するため `defer_loading` マーカーが除去され、Responses 経路には独自の 3 状態の `tool_search` 設定があります。[ツール検索](https://shunt.sh/ja/guides/codex/#ツール検索)を参照してください。
-- **auto モードのサーバーサイド分類器**（`dangerous-tool-use-*`） — auto モードは各ツール使用の分類を、追加課金なしで API に依頼します。Anthropic ルートでは、shunt がそのリクエストと判定をそのまま中継します。アップストリームが応答できない場合（翻訳ルート、またはこのフィールドを受け付けると確認できていない Anthropic プロトコルのサードパーティ）、shunt は何も返さない代わりにアクションごとに「評価不能」と応答します。これによりクライアントはそのアクションだけをローカルで分類し、次のターンでも引き続きサーバーに問い合わせるため、セッション中にこの機能を諦めることはありません。[トラブルシューティング](https://shunt.sh/ja/reference/troubleshooting/)を参照してください。
+- **auto モードのサーバーサイド分類器**（`dangerous-tool-use-*`） — auto モードは各ツール使用の分類を、追加課金なしで API に依頼します。Anthropic ルートでは、shunt がそのリクエストと判定を中継します。アップストリームが応答できない場合（翻訳ルート、またはこのフィールドを受け付けると確認できていない Anthropic プロトコルのサードパーティ）、shunt は何も返さない代わりにアクションごとに「評価不能」と応答します。これによりクライアントはそのアクションだけをローカルで分類し、次のターンでも引き続きサーバーに問い合わせるため、セッション中にこの機能を諦めることはありません。[トラブルシューティング](https://shunt.sh/ja/reference/troubleshooting/)を参照してください。
 
 **設計原則:** スペックに準拠した Anthropic-Messages ゲートウェイであること（`/v1/messages`、`/v1/models`、正しいヘッダー・アトリビューションのパススルー）、リクエストの `model` id でルーティングすること、マッピングされたモデルについて Anthropic Messages ⇄ OpenAI Responses API を変換すること。Claude Code のプロンプトが変わるたびに壊れるプロンプト形状のヒューリスティックは使いません。
 

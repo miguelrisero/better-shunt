@@ -6,9 +6,10 @@
       "domain": "gateway",
       "feature": "spend-limits",
       "created_at": "2026-10-04T19:02:50.042Z",
-      "updated_at": "2026-10-04T19:02:50.042Z",
+      "updated_at": "2026-10-21T05:48:24.604Z",
       "source_tracks": [
-        "spend-enforcement-20261003"
+        "spend-enforcement-20261003",
+        "codex-spend-caps-20261021"
       ],
       "traces": [],
       "requirements": [
@@ -116,6 +117,247 @@
           "id": "REQ-021",
           "kind": "non-functional",
           "statement": "keep concurrent updates to one principal's counters lossless"
+        },
+        {
+          "id": "REQ-022",
+          "kind": "functional",
+          "statement": "resolve each Codex-endpoint request's principal exactly as `/v1/messages` does — the authenticated `[server.auth]` identity (static token name or verified JWT email), or the single anonymous principal when the endpoint runs without `[server.auth]`"
+        },
+        {
+          "id": "REQ-023",
+          "kind": "functional",
+          "statement": "check the principal's effective daily, weekly, and monthly caps before a Codex-endpoint turn reaches any upstream, over the HTTP routes and over the inbound Responses WebSocket, and refuse the turn when period-to-date spend has reached any of them"
+        },
+        {
+          "id": "REQ-024",
+          "kind": "functional",
+          "statement": "refuse an over-cap turn with HTTP `429` and an OpenAI Responses error envelope whose `type` and `code` are `usage_limit_reached`, whose `resets_at` is the Unix time the cap that resets last resets, whose message names that cap's period and UTC reset time (appended with `blocked_message` when configured), and which carries `retry-after` with the seconds until that reset"
+        },
+        {
+          "id": "REQ-025",
+          "kind": "functional",
+          "statement": "carry a configured `blocked_message` on the refusal in the `x-codex-promo-message` header as well, because the Codex CLI renders its own usage-limit text from `resets_at` and that header rather than from the error message"
+        },
+        {
+          "id": "REQ-026",
+          "kind": "functional",
+          "statement": "refuse an over-cap turn on an open inbound WebSocket by sending that turn a terminal error event carrying the same error as REQ-024, and keep the socket open for later turns"
+        },
+        {
+          "id": "REQ-027",
+          "kind": "functional",
+          "statement": "refuse the Codex CLI's web-search calls (`/alpha/search` and its aliases) for an over-cap principal with the same error as REQ-024, without metering them"
+        },
+        {
+          "id": "REQ-028",
+          "kind": "functional",
+          "statement": "meter each Codex-endpoint turn that completes from the upstream-reported Responses `usage` (input tokens, cached input tokens, output tokens), priced through the existing pricing table by the serving provider, the client-requested model, and the upstream model, into the same counters `/v1/messages` writes"
+        },
+        {
+          "id": "REQ-029",
+          "kind": "functional",
+          "statement": "price a Codex-endpoint model the pricing table cannot place — every GPT/Codex model unless the operator adds a `[[server.spend.pricing.overrides]]` row for it — at the existing unknown-model rate with the existing once-per-model warning, and add no built-in GPT/Codex prices"
+        },
+        {
+          "id": "REQ-030",
+          "kind": "functional",
+          "statement": "bill a turn that ends without the upstream's completion report — a dropped or closed WebSocket, a broken or cancelled stream — at a floor estimate made of the request's estimated input tokens plus the output text already delivered to the client"
+        },
+        {
+          "id": "REQ-031",
+          "kind": "functional",
+          "statement": "honor `[server.spend.enforcement] fail_closed_on_error` on this endpoint the same way `/v1/messages` does when a principal's spend state cannot be consulted"
+        },
+        {
+          "id": "REQ-032",
+          "kind": "functional",
+          "statement": "leave the endpoint unchanged — no cap check, no metering — when `[server.spend]` is not configured"
+        },
+        {
+          "id": "REQ-033",
+          "kind": "functional",
+          "statement": "document the Codex-endpoint enforcement, its refusal shape and what the Codex CLI shows for it, the WebSocket and web-search behavior, the floor-estimate rule, and the need for pricing overrides on GPT/Codex models in `docs/gateway-spend-limits.md`, `docs/m11-inbound-codex-endpoint.md`, the README locales, and the site reference pages with their `ko`/`ja`/`zh-cn` copies"
+        },
+        {
+          "id": "REQ-034",
+          "kind": "non-functional",
+          "statement": "preserve streaming semantics on the Codex endpoint — metering observes usage as the relayed stream or WebSocket frames pass and never buffers or alters the bytes sent to the client"
+        },
+        {
+          "id": "REQ-035",
+          "kind": "non-functional",
+          "statement": "keep a metering or persistence failure from failing the turn it meters"
+        },
+        {
+          "id": "REQ-036",
+          "kind": "non-functional",
+          "statement": "add no perceptible latency to Codex-endpoint turns, including for principals without caps"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-002",
+      "domain": "routing",
+      "feature": "failover",
+      "created_at": "2026-10-23T08:13:28.479Z",
+      "updated_at": "2026-10-23T08:13:28.479Z",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "traces": [],
+      "requirements": [
+        {
+          "id": "REQ-001",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)"
+        },
+        {
+          "id": "REQ-002",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)"
+        },
+        {
+          "id": "REQ-003",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`"
+        },
+        {
+          "id": "REQ-004",
+          "kind": "functional",
+          "statement": "advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response"
+        },
+        {
+          "id": "REQ-005",
+          "kind": "functional",
+          "statement": "keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream"
+        },
+        {
+          "id": "REQ-006",
+          "kind": "functional",
+          "statement": "skip a credential the gateway owns (an API-key upstream, or one account of a Claude subscription pool) for new requests after it returns an account-level refusal, until the refusal's stated access-resume time for a spend-limit refusal, or for 1 hour for a refusal that states no time"
+        },
+        {
+          "id": "REQ-007",
+          "kind": "functional",
+          "statement": "rotate a Claude subscription pool to its next account on an account-level refusal before the chain moves to the next upstream, consistent with how the pool already handles account-scoped failures"
+        },
+        {
+          "id": "REQ-008",
+          "kind": "functional",
+          "statement": "never put a client-supplied credential (passthrough authentication) into the skip state, because the refusal belongs to that client's key and not to the upstream"
+        },
+        {
+          "id": "REQ-009",
+          "kind": "functional",
+          "statement": "hold the skip state in memory only; a restart clears it"
+        },
+        {
+          "id": "REQ-010",
+          "kind": "functional",
+          "statement": "when the chain is exhausted with no successful response and an account-level refusal was the best remembered failure, return it to the client with the upstream's own status and error message intact, under the existing preference order"
+        },
+        {
+          "id": "REQ-011",
+          "kind": "functional",
+          "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal"
+        },
+        {
+          "id": "REQ-012",
+          "kind": "functional",
+          "statement": "try a chain whose every element is in the skip window as configured instead of refusing locally, so a credential that was topped up or raised is noticed before its window ends"
+        },
+        {
+          "id": "REQ-013",
+          "kind": "non-functional",
+          "statement": "read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)"
+        },
+        {
+          "id": "REQ-014",
+          "kind": "non-functional",
+          "statement": "leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses"
+        },
+        {
+          "id": "REQ-015",
+          "kind": "non-functional",
+          "statement": "log each account-level refusal at warning level with the upstream name and the refusal kind, log the skip expiry only for a credential that is actually skipped (not for passthrough), log the account cooldown for a Claude pool refusal, and count the advance in the existing failover metric"
+        }
+      ]
+    },
+    {
+      "id": "SPEC-003",
+      "domain": "auth",
+      "feature": "inbound-jwt",
+      "created_at": "2026-10-30T03:04:00.075Z",
+      "updated_at": "2026-10-30T03:04:00.075Z",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "traces": [],
+      "requirements": [
+        {
+          "id": "REQ-001",
+          "kind": "functional",
+          "statement": "accept an optional [server.auth] jwt_header key naming a request header from which an inbound JWT is read, stripping a leading Bearer scheme when present"
+        },
+        {
+          "id": "REQ-002",
+          "kind": "functional",
+          "statement": "accept an optional [server.auth] jwt_cookie key naming a cookie from which an inbound JWT is read"
+        },
+        {
+          "id": "REQ-003",
+          "kind": "functional",
+          "statement": "verify a token found in a configured header or cookie against the configured [[server.auth.jwt]] entries with exactly the rules applied to a bearer JWT (issuer, audience, authorized party, token age, claim rules, identity claim)"
+        },
+        {
+          "id": "REQ-004",
+          "kind": "functional",
+          "statement": "read the configured header and cookie on the inbound Codex endpoint's routes only — Responses over HTTP and WebSocket on all three base paths, web search, and the client analytics sink — and nowhere else"
+        },
+        {
+          "id": "REQ-005",
+          "kind": "functional",
+          "statement": "try the credential slots in a fixed order — static token, then Authorization: Bearer JWT, then the configured header, then the configured cookie — and authenticate the caller with the first slot that succeeds"
+        },
+        {
+          "id": "REQ-006",
+          "kind": "functional",
+          "statement": "use the verified identity from a header or cookie token as the caller principal for usage attribution, spend limits, and account-pool session stickiness, exactly as a bearer JWT identity is used"
+        },
+        {
+          "id": "REQ-007",
+          "kind": "functional",
+          "statement": "remove the configured header and every cookie header from the request before it is forwarded to any upstream, on both HTTP and WebSocket"
+        },
+        {
+          "id": "REQ-008",
+          "kind": "functional",
+          "statement": "reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty or not a valid cookie name"
+        },
+        {
+          "id": "REQ-009",
+          "kind": "functional",
+          "statement": "keep gateway-owned authentication failures on the Codex endpoint in the OpenAI Responses error shape and status codes — one undifferentiated 401 for a missing or rejected credential, 503 when no slot authenticates and at least one presented token names a configured issuer whose key set cannot be fetched"
+        },
+        {
+          "id": "REQ-010",
+          "kind": "functional",
+          "statement": "apply configuration reloads to jwt_header and jwt_cookie the same way reloads already apply to [server.auth]"
+        },
+        {
+          "id": "REQ-011",
+          "kind": "functional",
+          "statement": "consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's Host"
+        },
+        {
+          "id": "REQ-012",
+          "kind": "non-functional",
+          "statement": "leave behavior unchanged for every deployment that sets neither jwt_header nor jwt_cookie — same accepted credentials, same headers forwarded, same responses"
+        },
+        {
+          "id": "REQ-013",
+          "kind": "non-functional",
+          "statement": "avoid disclosing which credential slot or which check failed in an authentication error or in logs at default verbosity, and never log a token value"
         }
       ]
     }

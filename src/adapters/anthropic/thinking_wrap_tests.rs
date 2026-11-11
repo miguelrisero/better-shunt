@@ -1195,8 +1195,7 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
         unwrap_upstream_signature(&wrapped),
         Some((key_of(&minimax.uri()), "mm-original".to_string()))
     );
-    // shunt decodes no content coding, so a compressed reply could not be
-    // wrapped: the third-party host is asked for an uncompressed one.
+    // The third-party host is asked for an uncompressed reply.
     assert_eq!(
         last_accept_encoding(&minimax).await.as_deref(),
         Some("identity")
@@ -1226,7 +1225,7 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
     assert_eq!(
         last_accept_encoding(&claude).await.as_deref(),
         Some("gzip"),
-        "a first-party request keeps the client's supported codings"
+        "a first-party request keeps the client's decodable codings"
     );
     assert_eq!(
         away["messages"][1]["content"],

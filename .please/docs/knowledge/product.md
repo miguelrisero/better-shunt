@@ -29,7 +29,8 @@ A single Rust binary that:
   (fallback configurable via `server.default_provider`)
 - Translates Anthropic Messages ⇄ each provider's protocol (e.g. OpenAI Responses) while
   **preserving streaming semantics** and tool use
-- Reuses existing subscriptions via OAuth (Codex, Grok, Cursor) instead of new API spend
+- Reuses existing subscriptions via OAuth (Codex, ChatGPT plan via Sign in with ChatGPT, Grok,
+  Cursor) instead of new API spend
 - Adds any Anthropic-Messages-compatible backend through **one config table** — no code change
 - Emits all gateway-owned errors in Anthropic error shape so Claude Code behaves normally
 
@@ -46,15 +47,16 @@ A single Rust binary that:
 ## Core Capabilities
 
 - Model-id routing (exact, prefix, default-provider) — `src/routing.rs`
-- Provider adapters (OpenAI, ChatGPT/Codex incl. WebSocket v2, xAI, Grok, Cursor, Anthropic
-  passthrough) — `src/adapters/`
+- Provider adapters (OpenAI, ChatGPT/Codex incl. WebSocket v2, ChatGPT plan, xAI, Grok, Cursor,
+  Anthropic passthrough) — `src/adapters/`
 - Anthropic ⇄ OpenAI Responses translation — `src/model/`
 - OAuth login + credential refresh, multi-account pooling & load balancing — `src/auth/`
 - `/v1/models` discovery, `/v1/messages` proxy, `count_tokens`
 - Opt-in admin web surface for browser account provisioning + read-only pool dashboard
 - Opt-in per-user/organization spend caps (`[server.spend]`): metered and enforced on
   `/v1/messages` requests the gateway pays for (chains made only of passthrough or
-  `noop` routes are neither enforced nor metered), with an Admin API and `/effective` view — `src/gateway/spend/`
+  `noop` routes are neither enforced nor metered) and on inbound Codex endpoint turns (HTTP and
+  WebSocket, refused with `usage_limit_reached`), with an Admin API and `/effective` view — `src/gateway/spend/`
 - Opt-in durable store (`[store]`: SQLite or PostgreSQL) for pool quota, gateway
   sessions, and spend limits/audit, with a one-time import of the JSON snapshots —
   single instance (`src/store/`, `docs/store.md`)

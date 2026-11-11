@@ -13,7 +13,7 @@ use crate::{
     auth::{inbound::InboundAuth, inbound_jwt::JwksCache},
     codex_analytics, codex_endpoint,
     concurrency::{limit_requests, ConcurrencyLimit},
-    config::{Config, ConfigError},
+    config::{Config, ConfigError, CountTokens, ProviderKind},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
     http_tuning::{enforce_http_tuning, HttpTuningLayer},
@@ -95,10 +95,12 @@ impl AppState {
         let rate_limits = config.server.rate_limits.clone();
         let runtime = RuntimeState::from_config(config)?;
         let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
+        let accounts = Arc::new(AccountPool::new());
+        crate::metrics::register_pool_headroom_source(&accounts);
         Ok(Self::from_shared(
             shared,
             http_client,
-            Arc::new(AccountPool::new()),
+            accounts,
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
@@ -186,6 +188,15 @@ fn boot_is_loopback(config: &Config) -> bool {
         .is_ok_and(|addr| addr.ip().is_loopback())
 }
 
+/// Whether any provider counts tokens with the local encoder. Anthropic
+/// providers pass `count_tokens` upstream whatever the setting says, so only a
+/// non-Anthropic provider left at `tiktoken` ever loads the vocab.
+fn counts_tokens_locally(config: &Config) -> bool {
+    config.providers.values().any(|provider| {
+        provider.kind != ProviderKind::Anthropic && provider.count_tokens == CountTokens::Tiktoken
+    })
+}
+
 /// Build the router and return it alongside the [`SharedState`] it reads and a
 /// clone of the request [`AppState`], so the caller can spawn reload watchers
 /// that hot-swap the same store and background tasks (the usage poller) that
@@ -195,6 +206,12 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // validates, but callers may construct `Config` programmatically.
     let runtime = RuntimeState::from_config(config)?;
     let config = runtime.config.as_ref();
+    // Pay the tiktoken vocab's one-time cold load (~0.6 s) here rather than on
+    // the first turn, whose estimate is bounded at one second and would
+    // otherwise seed `message_start` with `input_tokens: 0` (issue #642).
+    if counts_tokens_locally(config) {
+        crate::count_tokens::warm_encoder();
+    }
     // The inbound concurrency gate is fixed at boot because its semaphore is
     // installed as a router layer. Reloaded values take effect after restart.
     let max_concurrent_requests = config.server.max_concurrent_requests;
@@ -237,13 +254,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let spend_state_path = spend_state_path(config);
     let rate_limits = config.server.rate_limits.clone();
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
+    let accounts = Arc::new(AccountPool::new());
+    crate::metrics::register_pool_headroom_source(&accounts);
     let state = AppState::from_shared(
         shared.clone(),
         reqwest::Client::builder()
             .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
             .build()
             .expect("build responses http client"),
-        Arc::new(AccountPool::new()),
+        accounts,
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
@@ -429,6 +448,7 @@ mod tests {
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         config.server.usage = Some(UsageEndpointConfig::default());
         config

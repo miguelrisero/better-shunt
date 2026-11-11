@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.57.1"
+version = "0.64.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -131,7 +131,7 @@ rust-embed = { version = "8", features = ["debug-embed"], optional = true }
 # installed. Depend on rustls directly to install the process-wide default on
 # the first websocket handshake — see `ensure_crypto_provider` in
 # src/adapters/codex_ws.rs.
-rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
 sentry = { version = "0.48.4", default-features = false, features = ["anyhow", "backtrace", "contexts", "metrics", "panic", "reqwest", "rustls", "tracing"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -227,6 +227,15 @@ harness = false
 [[bench]]
 name = "stage_router"
 harness = false
+
+# Line tables keep file:line in panic backtraces but drop the type and variable
+# debuginfo that dominates link input: every `tests/*.rs` file is its own binary
+# statically linking the whole dependency graph, so full debuginfo made each
+# `cargo test` link dozens of very large objects. `test` inherits this profile;
+# `release` and `bench` are unaffected. Override locally with
+# `CARGO_PROFILE_DEV_DEBUG=full` when you need a debugger.
+[profile.dev]
+debug = "line-tables-only"
 
 # openai-oss-forks pins for permessage-deflate (RFC 7692) on the outbound Codex
 # WebSocket (issue #292). Pinned to an exact rev, not a branch, per our usual
