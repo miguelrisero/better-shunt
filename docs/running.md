@@ -800,9 +800,14 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > missing or too old. The gate keys on the `originator` + `version` headers
 > ([openai/codex#31967](https://github.com/openai/codex/issues/31967)). shunt therefore sends the
 > Codex CLI identity headers (`originator: codex_cli_rs`, `version`, and a matching `user-agent`) on
-> ChatGPT OAuth requests. shunt pins these headers to **openai/codex rust-v0.159.3**. If a future slug demands a newer
+> ChatGPT OAuth requests. shunt pins these headers to **openai/codex rust-v0.167.1**. If a future slug demands a newer
 > client, bump the pinned version in `src/adapters/responses/request.rs` (`CODEX_USER_AGENT` /
 > `CODEX_CLIENT_VERSION`).
+>
+> The backend can also refuse an identity that passes `minimal_client_version`. Since
+> 2026-11-10, every `gpt-6.1-sol` request with the `0.159.3` identity fails with
+> `HTTP 400: The 'gpt-6.1-sol' model requires a newer version of Codex.` Codex CLI 0.167.1 reaches
+> `gpt-6.1-sol`, so shunt sends `codex_cli_rs/0.167.1` and `version: 0.167.1`.
 
 Per-context selection also works via Claude Code's own knobs — divert one agent to a mapped model
 while the main session stays on Claude:
