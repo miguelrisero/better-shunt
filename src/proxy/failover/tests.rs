@@ -1043,6 +1043,9 @@ fn an_inbound_jwt_is_stripped_before_a_same_origin_passthrough_attempt() {
             authorized_parties: vec!["shunt-clients".to_string()],
             allowed_domains: vec!["example.com".to_string()],
             allowed_emails: Vec::new(),
+            require: Vec::new(),
+            subject_prefixes: Vec::new(),
+            identity_claim: "email".to_string(),
             clock_skew_seconds: 0,
             max_token_age_seconds: 3600,
         },
@@ -1198,5 +1201,44 @@ async fn a_requests_sample_carries_the_turns_attribution_through_the_adapter() {
     assert_eq!(
         unattributed, 0,
         "no sample fell back to the default attribution"
+    );
+}
+
+/// A mapped primary inside a refusal skip window must not promote the
+/// passthrough fallback behind it into the primary credential role: the
+/// caller's slots stay stripped, as in the configured chain (#817).
+#[test]
+fn skipping_a_mapped_primary_does_not_promote_a_passthrough_fallback_credential() {
+    let state = state();
+    state
+        .accounts
+        .upstream_skips()
+        .record("openai", Duration::from_secs(60));
+    let configured = vec![injecting_fallback_route(), passthrough_route()];
+
+    let mut base = caller_headers();
+    let routes = super::skip_refused_routes(&state, configured, &mut base);
+    assert_eq!(routes, vec![passthrough_route()]);
+    let inbound = context_for(&state, &base);
+    let sent = headers_for_route(&state, &routes[0], &base, &inbound, true, None);
+
+    assert!(sent.get("authorization").is_none());
+    assert!(sent.get("x-api-key").is_none());
+}
+
+/// A window recorded under a name that is passthrough now (an auth switch
+/// across a hot reload) never drops the route (#817 FR-8).
+#[test]
+fn a_skip_window_never_drops_a_route_that_is_passthrough_now() {
+    let state = state();
+    state
+        .accounts
+        .upstream_skips()
+        .record("anthropic", Duration::from_secs(60));
+    let configured = vec![passthrough_route(), injecting_fallback_route()];
+
+    assert_eq!(
+        super::skip_refused_routes(&state, configured.clone(), &mut HeaderMap::new()),
+        configured
     );
 }

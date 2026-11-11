@@ -21,7 +21,7 @@ shunt → Codex) share an upstream but differ in kind:
 | On pool exhaustion | Re-shapes the last upstream response into an Anthropic-style error envelope (`build_upstream_error`) | Relays the last upstream response verbatim — **not** re-shaped (see below) |
 | Model selects provider? | Yes, via `[models.upstream_model]` / `[[routes]]` / `[[route_prefixes]]` | **Opt-in.** By default no — every request goes to the one configured provider and `model` forwards verbatim as a label only. With `[[server.codex_endpoint.routes]]`, an exactly-matching `model` selects that entry's provider instead |
 
-Everything else — the M10 account pool, session-sticky selection, cooldowns, and refresh — is
+Everything else — the M10 account pool, session-to-account bindings, cooldowns, and refresh — is
 shared unchanged between the two paths.
 
 ## Configuration
@@ -92,7 +92,7 @@ per base-URL form:
 | `POST` | `/v1/alpha/search` |
 
 They share the Responses routes' handler pipeline — `[server.auth]`, the request body limit, the
-session-sticky pool key, account selection, failover, refresh, and the OpenAI-shaped gateway errors
+session pool key, account selection, failover, refresh, and the OpenAI-shaped gateway errors
 (`concurrency::is_codex_path` classifies them too) — and relay the body and the upstream reply
 verbatim to `<base_url>/codex/alpha/search` (`<base_url>/alpha/search` for a non-ChatGPT base),
 selected by `adapters::responses::CodexOperation`. Two things differ from a turn. A search is not a
@@ -117,6 +117,15 @@ present, with the query marker taking precedence over Anthropic-looking headers.
 query field, `/v1/models` preserves the existing Anthropic discovery response unchanged. All
 three variants pass the existing model-discovery authentication gate first, and the Codex-only
 paths remain absent when `[server.codex_endpoint]` was not enabled at boot.
+
+The three Codex-shaped variants also read the `[server.auth]` `jwt_header` and `jwt_cookie`
+slots, with the same slot order, cookie `Origin` rule, and repeated-slot handling as the
+Responses routes (see `inbound-jwt-auth.md`). They keep accepting every credential they accepted
+before: static tokens in the configured header, `x-api-key`, or `Authorization: Bearer`, a Bearer
+JWT, and a `[server.gateway]` login token. The Anthropic-shaped `/v1/models` response (no
+`client_version`) accepts a JWT only in `Authorization: Bearer`. Each Codex-shaped response
+stays the empty Codex catalog.
+
 ### Client analytics sink
 
 The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and
@@ -159,7 +168,7 @@ model the client asked for; only the wire body and `upstream_model` carry the up
 ### Routed requests to non-ChatGPT upstreams
 
 A route naming another `chatgpt_oauth` provider keeps the whole passthrough described below — its
-own account pool, session-sticky selection, failover, refresh, `x-shunt-account`, and verbatim
+own account pool, session bindings, failover, refresh, `x-shunt-account`, and verbatim
 header forwarding. One header is the exception: when the route rewrites `upstream_model`, the
 client's `x-codex-routing-hint` (which names the *public* model it asked for) no longer describes
 the body, so it is dropped rather than forwarded contradicting it. shunt does not re-synthesize the
@@ -293,14 +302,21 @@ about the client's own credential reaches the Codex backend.
 
 ## Account pool reuse (M10)
 
-Session-sticky quota-aware selection (issue #195), reactive failover, cooldowns, storm control, per-account refresh, and identity coalescing are all reused unchanged from [M10](m10-codex-multi-account.md) — this endpoint adds no new pool logic, only a new entry point into it. Account resolution goes through the shared `resolve_pool_accounts` path: configured entries are used directly, while an empty list uses the store directory-mtime cache and fills each scanned account's stable identity from its Codex `account_id`. The existing empty-store single-account fallback remains unchanged.
+Session-to-account bindings (ADR-0008), quota-aware selection (issue #195), reactive failover, cooldowns, storm control, per-account refresh, and identity coalescing are all reused unchanged from [M10](m10-codex-multi-account.md) — this endpoint adds no new pool logic, only a new entry point into it. Account resolution goes through the shared `resolve_pool_accounts` path: configured entries are used directly, while an empty list uses the store directory-mtime cache and fills each scanned account's stable identity from its Codex `account_id`. The existing empty-store single-account fallback remains unchanged.
 
-- **Sticky key.** The Codex CLI's own `session-id` request header selects the sticky account (same
-  hashing scheme as M10), falling back to `x-claude-code-session-id` for parity with the outbound
-  path. Same session id → same account, for as long as that account stays healthy. When
-  `[server.auth]` is configured, the sticky key is namespaced with the authenticated client name
-  (`{client}:{session-id}`, mirroring the outbound path) so that on a multi-tenant gateway one
-  client cannot pin another client's session onto a chosen account by replaying its `session-id`.
+- **Session key.** The Codex CLI's own `session-id` request header is the session key, falling
+  back to `x-claude-code-session-id` for parity with the outbound path. The session is bound to
+  one account in the binding table the outbound pool shares (see
+  [M8 session bindings](m8-anthropic-multi-account.md#session-bindings)). The table is keyed by
+  the key's SHA-256 hash, never the raw id. The binding stays on its account until that account
+  cannot serve and another account serves successfully, or until it has stayed soft-near for 60
+  seconds while a healthy alternative exists (see
+  [M8 session bindings](m8-anthropic-multi-account.md#session-bindings)). It does not move back on recovery.
+  HTTP and WebSocket turns of one session share the binding. Only a `2xx` serve commits it, so a
+  verbatim-relayed error leaves the binding unchanged. When `[server.auth]` is configured, the
+  session key is namespaced with the authenticated client name (`{client}:{session-id}`,
+  mirroring the outbound path) so that on a multi-tenant gateway one client cannot pin another
+  client's session onto a chosen account by replaying its `session-id`.
 - **Failover** follows M10's rules exactly: every `429` rotates (cooldown = `retry-after` clamped
   1–3600s, default 60s); a `5xx` or transport failure cools the account for 30s and rotates; a
   `401` on a refreshable (store/`credentials`) account triggers a force-refresh and one retry (5
@@ -375,6 +391,51 @@ Without `[server.auth]`, a browser-originated upgrade is admitted only when its 
 the `Host` header. That check cannot tell `http` from `https` on the same host — shunt does not
 see the client-facing scheme when TLS terminates at a proxy — so gate the endpoint with
 `[server.auth]` for anything beyond loopback.
+
+## Spend limits
+
+With `[server.spend]` configured, the endpoint enforces and meters the same per-principal caps as
+`/v1/messages` ([Gateway spend limits](gateway-spend-limits.md), issue #733). Without it, nothing
+here applies.
+
+- **Checked before any upstream call.** Every turn is assessed first, on the HTTP `POST` of all
+  three Responses paths and on the Responses WebSocket. The principal is the one `/v1/messages`
+  uses: the static `[server.auth]` token name, the verified JWT identity (`identity_claim`, the email by default), or `shunt:anonymous` without
+  `[server.auth]`. This endpoint does not accept gateway-login sessions.
+- **HTTP refusal.** An over-cap turn gets `429` with
+  `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<epoch s>}}`
+  and the headers `retry-after`, `x-should-retry: false` and `x-codex-promo-message: <blocked_message>`.
+  The promo header is sent only when `blocked_message` is plain ASCII; the text always rides in the
+  message. The refusal is built by the endpoint itself, not by the generic OpenAI error shaping,
+  which would drop `code`, `resets_at` and the promo header. The named cap is the reached cap that
+  resets last.
+- **Fail-closed.** With `fail_closed_on_error`, a capped principal whose spend state is unavailable
+  is refused with the same `usage_limit_reached` type and the message `spend limit unavailable`, with
+  no `resets_at` and no `retry-after`.
+- **What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, a `429` with
+  `usage_limit_reached` becomes the CLI's usage-limit error, which it does not retry. The CLI
+  renders its own "You've hit your usage limit … Try again at <resets_at>" text, with the promo
+  message when the header is present, and ignores the server message.
+- **WebSocket.** A refused `response.create` gets one frame,
+  `{"type":"error","status":429,"error":{…as above…},"headers":{"retry-after":…,"x-codex-promo-message":…}}`.
+  The socket stays open and each later turn is assessed afresh. A `generate: false` warmup makes no
+  upstream call and is not checked.
+- **Web search.** `/alpha/search` and its aliases are refused with the same error when over cap, and
+  are never metered.
+- **Metering.** A completed turn is billed from the Responses `usage` into the counters
+  `/v1/messages` writes, so one cap bounds both surfaces. Cached tokens are billed at the cache-read
+  rate and the rest of the input at the input rate; reasoning is inside output; there is no cache
+  write. Pricing is keyed by the serving provider, the client model and the upstream model.
+- **GPT pricing.** The built-in catalog has no GPT or Codex prices, so those models bill at the
+  unknown-model rate unless the operator adds `[[server.spend.pricing.overrides]]` rows (an example
+  is in [Gateway spend limits](gateway-spend-limits.md#inbound-codex-endpoint-metering)). Rows for
+  the endpoint's provider or its routes are not flagged as unreachable.
+- **Floor.** A turn that ends without reported usage (client close, replaced turn, broken stream)
+  is billed the input estimated from the request body plus the output text already delivered.
+- **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the
+  same cached split. One that reports no input (no readable `usage`, a cut body, or a body over 4 MiB)
+  bills the input estimated from the request body instead, alongside the output floor. A body the
+  client drops before its first byte is polled is not billed, as on `/v1/messages`.
 
 ## Reload behavior
 

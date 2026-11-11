@@ -212,8 +212,11 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.stage_router.decisions` | Counter | `model`, `tier`, `source` | Stage-router tier decisions, by the router's model id (as matched, so with any `[1m]` hint already stripped), the chosen tier, and why it was chosen; `count_tokens` probes are excluded. |
 | `shunt.stage_router.flips` | Counter | `model`, `from`, `to` | Decisions that moved a session off its pinned tier. The two directions stay separate because escalation is deliberately easier than de-escalation. |
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
+| `shunt.pool.quota_headroom_seconds` | Gauge | `provider`, `window` | Seconds of quota margin before the window resets, as the maximum across enabled, unpaused accounts at the hard threshold (`[server.pool] hard_threshold`, else 0.98), for `5h`, `7d`, or `7d_oi`. Burn speed is the window average (utilization / elapsed), not the recent pace, and the maximum is optimistic because traffic shifts to the surviving account and its burn rises. Negative means projected to run dry before the reset, or minus the seconds until the reset when already exhausted; the series is omitted while any such account projects no exhaustion (no utilization observed, utilization 0, or no reset time). Alert with `shunt_pool_quota_headroom_seconds < 0`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at the first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
+| `shunt.pool.session_account_switches` | Counter | `provider`, `reason`, `thinking_bound` | Pooled sessions whose binding moved to another account (ADR-0008). `reason` is `proactive` (the bound account was soft-near for 60 s, hard-over, quota-rejected, capped, paused or disabled), `cooldown` (it was cooling down for the request's scope) or `failover` (it was attempted and failed over, or left the pool). `thinking_bound` is `true` only for a Claude subscription account on a `claude-sonnet-5-5*` or `claude-haiku-5-5*` model, whose thinking blocks are lost on another account. A first placement is not a switch. |
+| `shunt.pool.session_binding_evictions` | Counter | `provider` | Session bindings evicted, least recently used first, when an insert found the 10,000-binding table full. Labelled with the provider whose placement evicted. |
 
 The five per-request series above carry two extra attributes: `client_kind` is
 `claude-code`, `codex`, or `other`, derived from the request's own client
@@ -277,11 +280,12 @@ fields. Ready-to-use entries (uncomment in
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax China — built-in preset | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen — built-in preset | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
+| Cheaper Inference — built-in preset | `https://api.cheaperinference.com` | `gpt-5.4`, `deepseek-v4-flash`, `glm-5.3` — OpenAI-compatible gateway with a Messages endpoint |
 | Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-`zhipu`, `minimax-cn`, and `opencode` are also built-in presets, so they do not need a `[providers.*]` table
+`zhipu`, `minimax-cn`, `opencode`, and `cheaperinference` are also built-in presets, so they do not need a `[providers.*]` table
 from `shunt.toml.example`. Use the ordered `[[upstreams]]` form instead — for example,
 `provider = "zhipu"` or `provider = "minimax-cn"` — and keep the `anthropic` passthrough default.
 
@@ -478,6 +482,9 @@ there is no equivalent upstream endpoint, so the provider's `count_tokens` setti
   image/tool-schema encoding or cache accounting. Each count is answered in-process (~ms), which
   matters because Claude Code's `/context` issues one `count_tokens` call **per displayed item**
   (system-prompt section, memory file, agent, deferred tool, …) — 30–50 calls per invocation.
+  The encoder's vocabulary loads once at startup (about half a second) whenever a non-Anthropic
+  provider uses this setting, so neither the first count nor the first streaming turn's
+  `message_start` input estimate waits on it.
 - `count_tokens = "estimate"` (opt-in) — shunt returns **501 `not_supported`**, telling Claude
   Code that the endpoint is unavailable and triggering its fallback. Note what Claude Code actually
   does then: the main-loop context bar estimates locally, but `/context` re-runs **every** category
@@ -781,9 +788,9 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog of
 > Codex slugs (and the reasoning levels each accepts) is openai/codex's
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-> The current listed slugs are **`gpt-6-astra`**, **`gpt-6.1-sol`**, **`gpt-6-luna`** (latest),
+> The current listed slugs are **`gpt-6-astra`**, **`gpt-6.1-sol`**, **`gpt-6-luna`**, **`gpt-6.1-terra`** (latest),
 > **`gpt-5.6-terra`** (frontier), and **`gpt-5.5`** /
-> **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**; older accounts may only be entitled to the
+> **`gpt-5.4`**; older accounts may only be entitled to the
 > earlier ones. Use `upstream_model` in a route, or pass an entitled slug via
 > `ANTHROPIC_CUSTOM_MODEL_OPTION`. See [`m2-chatgpt-oauth.md`](m2-chatgpt-oauth.md) §0.
 
@@ -944,6 +951,14 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 
 This is global, so it also removes attribution from any Anthropic-passthrough traffic (used for
 cost tracking) — which is fine when you're routing to another provider.
+
+With `=0`, some Claude Code side requests carry no first-party marker at all: mods'
+`$.model.complete` queries lose the attribution block that was their only one, and the auto-mode
+classifier never carries the identity prompt. On a subscription-OAuth Anthropic route those would
+otherwise reach `api.anthropic.com` unmarked and come back as a bare 429 (`client-shape-rejection`). shunt
+re-adds the Claude Code identity block on Claude Code requests (identified by
+`x-claude-code-session-id`, a `claude-cli/` user agent, or `x-app: cli`) that carry no accepted marker, so `=0`
+stays safe.
 
 ### 5.8 Context / usage display for mapped models
 

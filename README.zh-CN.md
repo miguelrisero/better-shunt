@@ -17,7 +17,7 @@
 
 名字即机制:电气/铁路中的 *shunt(分流)* 将流量中被选中的部分导向一条并行路径。在这里,被映射模型的推理被分流到另一个提供方,而 Claude Code 的工具和技能保持完好。
 
-内置了 OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、智谱、MiniMax 国内版、OpenCode Zen、Gemini、Antigravity 以及 Anthropic 透传,其中不少可以直接复用你已经在付费的订阅。任何兼容 Anthropic-Messages 的后端只需一个配置表即可接入,无需改动代码。参见[提供方](#提供方)。
+内置了 OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、智谱、MiniMax 国内版、OpenCode Zen、Cheaper Inference、Gemini、Antigravity 以及 Anthropic 透传,其中不少可以直接复用你已经在付费的订阅。任何兼容 Anthropic-Messages 的后端只需一个配置表即可接入,无需改动代码。参见[提供方](#提供方)。
 
 提示词缓存保留客户端选择的 Anthropic TTL。流式指标提供 5m/1h 写入明细，
 Gemini 与 Codex 一样报告缓存输入。主会话和驱动代理的选择性 TTL 配置及记录验证，
@@ -140,7 +140,24 @@ codex-fallback = "gpt-6.1-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`;或用 `shunt login antigravity --name` 在 `~/.shunt/accounts/antigravity` 下使用具名账号,通过 `accounts = [...]` 选择) |
 | `antigravity-cli` | `antigravity_cli` | 无(本地 CLI) | **已弃用。** 本地 `agy` 二进制 —— 通过子进程访问同一后端,已被上面的 `antigravity` 取代 |
 
-有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
+有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`cheaperinference`、`chatgpt-plan` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
+
+**ChatGPT 套餐(Sign in with ChatGPT)。** `chatgpt-plan` 预设通过 `api.openai.com/v1/responses` 上 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览使用 ChatGPT 套餐,与上面的 `codex` 提供方相互独立。用 `shunt login chatgpt-plan --name <account>` 登录(浏览器回调到 `127.0.0.1:1455`,远程主机上则粘贴回调 URL),添加一个 `provider = "chatgpt-plan"` 的有序 `[[upstreams]]` 条目(预设会补齐 `kind`、`base_url` 和 `auth = "chatgpt_plan_oauth"`),并按下面的方式映射模型。多个命名账户组成账户池,某个账户触达套餐用量上限时会轮换;`shunt logout chatgpt-plan --name <account>` 会撤销并清除一个账户。预览会拒绝一些请求参数,输出开始后触达用量上限时流会直接结束而不是轮换。详见 [ChatGPT 套餐指南](https://shunt.sh/zh-cn/guides/chatgpt-plan/)。
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
+
+[[upstreams]]
+name = "chatgpt-plan"
+provider = "chatgpt-plan" # preset: kind, base_url, and auth = "chatgpt_plan_oauth"
+
+[[models]]
+id = "gpt-6.1-sol"
+[models.upstream_model]
+chatgpt-plan = "gpt-6.1-sol"
+```
 
 各提供方的设置、模型 id 和注意事项都在[提供方](https://shunt.sh/zh-cn/guides/providers/)下,包括 Cursor 的 agent 模式前缀（[Cursor](https://shunt.sh/zh-cn/providers/cursor/)）以及 Antigravity 的两种传输方式和 `kind = "antigravity"` 迁移（[Antigravity](https://shunt.sh/zh-cn/providers/antigravity/)）。
 
@@ -161,6 +178,7 @@ codex-fallback = "gpt-6.1-sol"
 | MiniMax | `https://api.minimax.io/anthropic` | 见 [MiniMax 文档](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax 国内版 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`、`gpt-6-astra` — 精选跨厂商目录;读取 `x-api-key` |
+| Cheaper Inference | `https://api.cheaperinference.com` | `gpt-5.4`、`deepseek-v4-flash`、`glm-5.3` — 提供 Messages 端点的 OpenAI 兼容网关 |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
@@ -196,18 +214,18 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 
 | 功能 | 启用方式 | 文档 |
 | :-- | :-- | :-- |
-| Anthropic 多账号池化 —— 粘性会话、配额感知轮换、预测性规避、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/anthropic-multi-account/) |
-| Codex 多账号池化 —— `x-codex-*` 窗口跟踪、慢启动爬坡、重新探测、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/codex-multi-account/) |
+| Anthropic 多账号池化 —— 会话与账号绑定，仅在所绑定账号无法处理请求或已接近配额达 60 秒时才迁移(分配方式由 `[server.pool] assignment` 选择，默认 `spread`，也可设为 `soonest_weekly_reset`)、配额感知轮换、预测性规避、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/anthropic-multi-account/) |
+| Codex 多账号池化 —— 同样的会话账号绑定、`x-codex-*` 窗口跟踪、慢启动爬坡、重新探测、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/codex-multi-account/) |
 | 学习型 prefill 路由 (`type = "prefill_router"`) | 编译期选择启用 —— `cargo build --release --features prefill-router`(**默认关闭**;发布二进制和 Homebrew formula 都以 `--features ui` 构建,因此不包含它),此外还需要一个带 `type = "prefill_router"` 的 `[models.router]` 表、磁盘上的路由检查点,以及装有 `torch` 和 `transformers` 的 Python 环境 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--prefill_router) |
 | 入站 Codex 端点 —— 把 **Codex CLI** 通过 HTTP/SSE 或 WebSocket 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.sh/zh-cn/guides/inbound-codex-endpoint/) |
 | LLM 裁判路由 (`type = "llm_classifier"`、`type = "composite"`) —— 由裁判模型按 `classify_trigger` 逐轮挑选目标,其回复永远不会提供给客户端 | 带 `type = "llm_classifier"`(`mode = "capability"` 或 `"custom"`)或 `type = "composite"` 的 `[models.router]` 表,或 classifier 形态的 `[models.subagents]` 覆盖层 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--llm_classifier) |
 | 裁决已完成轮次的路由 (`mode = "escalation"`、`type = "advisor"`) —— 先生成回答并扣住,等裁判或审阅模型对完成的这一轮作出裁决后才发出;流式调用方会在裁决之后收到这一轮的重放 | 带 `type = "llm_classifier"` 加 `mode = "escalation"`,或带 `type = "advisor"` 的 `[models.router]` 表 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--advisor) |
-| 仅验证的入站 JWT —— 接受由你自己的身份提供方签发的 JWT,并用其 JWKS 验证;shunt 不签发任何内容,客户端因此保持第一方模式 | 具备一个或多个 `[[server.auth.jwt]]` 条目（每个包含 `issuer`、`audience`,以及 `email_domains` 或 `allowed_emails`）的 `[server.auth]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverauthjwt可选) |
+| 仅验证的入站 JWT —— 接受由你自己的身份提供方签发的 JWT,并用其 JWKS 验证;shunt 不签发任何内容,客户端因此保持第一方模式 | 具备一个或多个 `[[server.auth.jwt]]` 条目（每个包含 `issuer`、`audience`,以及 `email_domains` 或 `allowed_emails`;工作负载身份如 GitHub Actions 则改用 `require` / `subject_prefix` 加 `identity_claim`）的 `[server.auth]`;在入站 Codex 端点（`[server.codex_endpoint]`）上,`jwt_header` / `jwt_cookie` 为 Codex CLI 的 `gateway_oauth` 传递令牌 | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverauthjwt可选) |
 | Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略、Claude Desktop bootstrap(`GET /user/bootstrap`) | 具备 `public_url`、不少于 32 字节的 JWT 密钥,以及静态用户或 `[server.gateway.oidc]` 的 `[server.gateway]`;Desktop bootstrap 还需要指定 `template` 路径的 `[server.gateway.desktop_bootstrap]` | [指南](https://shunt.sh/zh-cn/guides/gateway-login/) |
 | 网关遥测接收 —— 原样转发受管客户端的 OTLP | 已配置的 `[server.gateway]`,以及 `forward_to` 非空的 `[server.gateway.telemetry]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
 | 管理 Web 界面 —— 账号与用量看板、浏览器预配 | 手写 `[server.admin]` 并提供管理员凭据（`tokens_env`、`tokens_file` 或一条 `write_keys`；仅有一条 `read_keys` 也能让看板以只读方式启动 —— 可以登录并查看全部视图，但预配需要 write），**或者**用 `shunt dashboard setup` 一次性写入配置表并签发令牌 —— 但写入配置表和签发令牌仅发生在 `[server.admin]` 不存在时；若已存在，它会保留现有凭据，只补上缺失的 `[server.oauth_usage]`。看板本身由只有 `--features ui` 构建才会内嵌的前端包提供 —— 预构建的发布二进制和 Homebrew formula 已包含，普通的 `cargo build`/`cargo install` 则没有 | [指南](https://shunt.sh/zh-cn/guides/admin-remote-provisioning/) |
 | 账户池控制 —— 暂停某个账户,或按配额最快重置的顺序对可用账户排序 —— 在仪表盘或 admin API 中运行时完成,无需编辑 `shunt.toml` 或重启 | `[server.admin]` write 凭据;`sort_by_reset` 也有对应的 `[server.pool]` 配置键 | [指南](https://shunt.sh/zh-cn/guides/pool-account-controls/) |
-| 支出上限 —— 通过 Admin API 存储的组织级和用户级上限,在由网关付费的 `/v1/messages` 请求上实施 —— 仅由 passthrough 或 `noop` 路由组成的链既不实施也不计量(`429 billing_error`、按主体的 `anthropic-ratelimit-*` 头部、`GET /v1/organizations/spend_limits/effective`);由 `[server.spend.pricing]` 设置计量器计算请求费用时使用的乘数,以及按上游和模型指定的费率覆盖。尚未应用于入站 Codex 端点([#733](https://github.com/pleaseai/shunt/issues/733)) | `[server.admin]`（必须提供管理员凭据: `tokens_env`、`tokens_file` 或一条 `write_keys`/`read_keys` —— read 级别只服务 GET） + `[server.spend]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverspend可选) |
+| 支出上限 —— 通过 Admin API 存储的组织级和用户级上限,在由网关付费的 `/v1/messages` 请求上实施 —— 仅由 passthrough 或 `noop` 路由组成的链既不实施也不计量(`429 billing_error`、按主体的 `anthropic-ratelimit-*` 头部、`GET /v1/organizations/spend_limits/effective`)—— 入站 Codex 端点(HTTP 和 WebSocket)同样适用,超限的回合会收到 `429 usage_limit_reached`,并计入同一组上限;由 `[server.spend.pricing]` 设置计量器计算请求费用时使用的乘数,以及按上游和模型指定的费率覆盖(GPT/Codex 模型没有内置价格,不添加覆盖行就按未知模型费率计费) | `[server.admin]`（必须提供管理员凭据: `tokens_env`、`tokens_file` 或一条 `write_keys`/`read_keys` —— read 级别只服务 GET） + `[server.spend]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverspend可选) |
 | 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.usage]`;另需 `[server.auth]`（客户端令牌通过 `tokens_env`（默认 `SHUNT_CLIENT_TOKENS`）或 `[[server.auth.jwt]]` 提供）或 `[server.gateway]`（网关登录） | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverusage可选) |
 | Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]`;非回环 bind 还需 `[server.auth]`（客户端令牌通过 `tokens_env`（默认 `SHUNT_CLIENT_TOKENS`）或 `[[server.auth.jwt]]` 提供）或 `[server.gateway]` | [参考(英文)](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
 | 上游状态轮询 —— 将 Statuspage 指示灯作为指标展示,在 `--features ui` 构建中还会出现在看板上 | 至少含一个 `[[server.status.sources]]` 条目的 `[server.status]` | [参考(英文)](https://shunt.sh/reference/configuration/#serverstatus-optional) |
@@ -242,13 +260,13 @@ Claude Code 会把每一轮都发送到 Anthropic API。`shunt` 位于前面(通
 
 Claude Code 在 `ANTHROPIC_BASE_URL` 后暴露了一个**一等公民的网关契约**。`shunt` 实现的正是这个契约,而不是早期 Claude Code 代理所依赖的“对子 agent 的系统提示做哈希”这种脆弱启发式。
 
-- [LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol) —— 该 API 契约规定了端点、需要转发与需要消费的头部和 body 字段、功能透传以及归属信息。运行中的网关会在 `GET /protocol` 提供机器可读的规范。Claude Code 会在系统提示前加上客户端版本和会话指纹;是否抑制它是开发者通过 `CLAUDE_CODE_ATTRIBUTION_HEADER=0` 决定的事,因此 shunt 原样转发该归属块。
+- [LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol) —— 该 API 契约规定了端点、需要转发与需要消费的头部和 body 字段、功能透传以及归属信息。运行中的网关会在 `GET /protocol` 提供机器可读的规范。Claude Code 会在系统提示前加上客户端版本和会话指纹;是否抑制它是开发者通过 `CLAUDE_CODE_ATTRIBUTION_HEADER=0` 决定的事,因此 shunt 原样转发该归属块。抑制之后,shunt 会在以订阅 OAuth 令牌发往 Anthropic 路由、且不带标记的 Claude Code 请求上恢复 Claude Code identity(`count_tokens` 除外),避免旁路查询被不带头部的 client-shape 429 拒绝。
 - [模型发现](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) —— Claude Code 在启动时查询 `GET /v1/models?limit=1000`(通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 选择加入),并把返回的模型加入 `/model` 选择器。shunt 会返回精选的 `[[models]]` 条目,并在 `auto_include_builtin_models` 仍为 `true` 时附上调用方的实时目录 —— 仅当 `server.default_provider` 为 Anthropic 类型时才会拉取,否则(或缺少凭据、拉取失败时)回退到内置快照。**约束:** `id` 不以 `claude`/`anthropic` 开头的条目会被忽略 —— 非 Claude 模型必须设置别名或手动添加。参见[模型发现](https://shunt.sh/zh-cn/guides/model-discovery/)。
 - **网关提示头**(`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`)—— 较新的 Claude Code 会用 `x-claude-code-*` 头描述每个请求。shunt 把其中五个读入自己的路由上下文 —— 会话 id、被委派的 agent id、请求类别(`main`、`subagent`、`workflow`、`compaction`、`auxiliary`)、agent 类型,以及仅在上下文压缩后第一轮发送一次的标记 —— 并由 `GET /protocol` 将它们列为消费头。agent id 这个头**不受该变量控制**,因此在默认部署下,`Task` 子 agent 无需改动客户端就已经拥有独立于父会话 dwell 与升档的自有[阶段路由器](https://shunt.sh/zh-cn/guides/stage-router/)档位固定。在客户端设置 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` 后会额外发送其余四个,使请求类别优先于 agent id 回退规则,并让路由器把压缩之后的若干轮保持在强力档位。
 
 - [添加自定义模型选项](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) —— `ANTHROPIC_CUSTOM_MODEL_OPTION` 会在不替换内置别名的前提下,向 `/model` 选择器添加一个经网关路由的条目;该 ID 不做校验,因此网关接受的任何字符串都可用。鉴于上面的发现约束,**这是选择非 Claude 模型的主要方式**(例如 `gpt-6.1-sol`)。
 - **工具搜索**(`ENABLE_TOOL_SEARCH`)—— Claude Code 会延迟加载 MCP/LSP 工具 schema,按需揭示,从而回收上下文。由于 shunt 不是 Anthropic 第一方主机,除非你主动开启,Claude Code 会保持其**关闭**。开启后延迟能否保留取决于上游而不只是设置:`claude*` 和 `anthropic/*` id 会逐字节保留该协议,其他 id 的 `defer_loading` 标记会被剥离(因为这些主机会拒绝),而 Responses 路径有自己的三态 `tool_search` 设置。参见[工具搜索](https://shunt.sh/zh-cn/guides/codex/#工具搜索)。
-- **auto 模式的服务端分类器**(`dangerous-tool-use-*`)—— auto 模式会免费请求 API 在服务端对每次工具使用进行分类。在 Anthropic 路由上,shunt 原样中继该请求及其判定。当上游无法作答时(翻译路由,或尚未确认接受该字段的 Anthropic 协议第三方),shunt 不是什么都不返回,而是逐个动作回复“无法评估”,于是客户端只在本地分类那一个动作,并在下一轮继续询问服务端,而不会在整个会话中放弃该功能。参见[故障排查](https://shunt.sh/zh-cn/reference/troubleshooting/)。
+- **auto 模式的服务端分类器**(`dangerous-tool-use-*`)—— auto 模式会免费请求 API 在服务端对每次工具使用进行分类。在 Anthropic 路由上,shunt 中继该请求及其判定。当上游无法作答时(翻译路由,或尚未确认接受该字段的 Anthropic 协议第三方),shunt 不是什么都不返回,而是逐个动作回复“无法评估”,于是客户端只在本地分类那一个动作,并在下一轮继续询问服务端,而不会在整个会话中放弃该功能。参见[故障排查](https://shunt.sh/zh-cn/reference/troubleshooting/)。
 
 **设计原则:** 做一个符合规范的 Anthropic-Messages 网关(`/v1/messages`、`/v1/models`、正确的头部与归属透传),按请求的 `model` id 路由,并为已映射的模型在 Anthropic Messages ⇄ OpenAI Responses API 之间做转换 —— 不使用会随 Claude Code 提示变更而失效的提示形状启发式。
 

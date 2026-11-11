@@ -8,7 +8,7 @@ Setup guide: [docs/setup-shunt.md](https://github.com/miguelrisero/ultraship/blo
 
 ## Baseline and maintained changes
 
-Upstream baseline: `0dbdae0` (main after v0.57.1), merged into
+Upstream baseline: `v0.64.0`, merged into
 fork `main`. Changes are deliberately pinned instead of deploying upstream main automatically.
 
 - Conservative schema regex filtering: a pattern must pass the Python compatibility
@@ -16,13 +16,6 @@ fork `main`. Changes are deliberately pinned instead of deploying upstream main 
   ([#492](https://github.com/pleaseai/shunt/issues/492)). It applies to eager,
   shim-revealed, native ToolSearch and inbound Responses-to-Chat tools
   ([#489](https://github.com/pleaseai/shunt/issues/489)). Original request data is not mutated.
-- Anthropic response decoding from
-  [skuda/shunt#4](https://github.com/skuda/shunt/pull/4), not yet upstream: native
-  Anthropic gzip, deflate and zstd responses are decoded before safeguard synthesis,
-  alias rewrite, keepalive and metrics read them, then re-encoded for the client.
-  Without it, Claude Code auto mode can receive no bytes until the compressed reply
-  ends. Retire it when upstream ships an equivalent change that passes
-  `tests/anthropic_response_coding.rs`.
 - Progressive tool discovery and readable tool-reference history on non-Anthropic
   Messages providers ([#424](https://github.com/pleaseai/shunt/issues/424)). No arbitrary
   truncation of the callable catalog.
@@ -50,6 +43,15 @@ Codex WebSocket error frames ([#675](https://github.com/pleaseai/shunt/issues/67
 The fork carries no patch for any of them. #661 supersedes the upstream assertion that
 only `rate_limit_exceeded` is a throttle, so that comment leaves
 `tests/responses_translate.rs` by upstream change, not by a dropped fork patch.
+
+### Retired at v0.64.0
+
+The fork's Anthropic response decoding from
+[skuda/shunt#4](https://github.com/skuda/shunt/pull/4) is removed. Upstream
+[#832](https://github.com/pleaseai/shunt/pull/832) ships the same gzip, deflate and
+zstd decoding, and adds 206 passthrough, byte-validator removal and a bounded zstd
+window. `src/response_coding*` and `tests/anthropic_response_coding.rs` match the
+release tag.
 
 ### Retired at v0.55.1
 

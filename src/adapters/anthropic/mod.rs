@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 
 use crate::{
     accounts::{self, CountAttempt, FailoverAction},
-    adapters::{Adapter, AdapterError, AdapterFuture},
+    adapters::{session_commit::SessionCommit, Adapter, AdapterError, AdapterFuture},
     auth::{
         self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
         resolve_kimi_account, Credential,
@@ -22,6 +22,7 @@ use crate::{
     server::AppState,
 };
 
+mod account_refusal;
 mod auto_mode_classifier;
 mod deferral;
 mod model_rewrite;
@@ -104,9 +105,11 @@ async fn forward(
     // stealth slugs, Kimi, …) and thinking blocks carrying a signature shunt
     // minted rather than Anthropic — that one is unconditional, since such a
     // signature is no more valid to an Anthropic-compatible host than to
-    // Anthropic itself.
-    if oauth_client {
-        auto_mode_classifier::restore_claude_code_identity(&mut body);
+    // Anthropic itself. `count_tokens` faces no such gate — measured: a
+    // marker-less count is answered 200 — so a repair there would only inflate
+    // the count the client reads back.
+    if oauth_client && !crate::proxy::is_count_tokens(uri) {
+        auto_mode_classifier::restore_claude_code_identity(&mut body, headers);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -156,10 +159,38 @@ async fn forward(
             "upstream returned 429"
         );
     }
+    // An account-level refusal is judged here, on the one 400/402 body read,
+    // and handed to the chain as a marker so it advances (#817).
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
-    // reuse it with no account attribution instead of duplicating that logic.
-    relay_response(&state, &route, upstream, None, bounds).await
+    // it reuses it with no account attribution instead of duplicating that logic.
+    relay_judged(&state, &route, upstream, bounds, |status, refusal| {
+        account_refusal::note(&state, &route, status, refusal);
+    })
+    .await
+}
+
+/// Judge `upstream` for an account-level refusal, relay it with no account
+/// attribution, and mark the relayed response [`AccountRefused`] when it was
+/// one, after `on_refused` recorded the refusal.
+///
+/// [`AccountRefused`]: crate::proxy::failover::AccountRefused
+async fn relay_judged(
+    state: &AppState,
+    route: &Route,
+    upstream: reqwest::Response,
+    bounds: crate::adapters::ResponseBounds,
+    on_refused: impl FnOnce(StatusCode, account_refusal::AccountRefusal),
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let (upstream, refused) = account_refusal::judge(upstream, bounds).await?;
+    let (status, mut response) = relay_response(state, route, upstream, None, bounds).await?;
+    if let Some(refusal) = refused {
+        on_refused(status, refusal);
+        response
+            .extensions_mut()
+            .insert(crate::proxy::failover::AccountRefused);
+    }
+    Ok((status, response))
 }
 
 async fn forward_claude_oauth(
@@ -211,13 +242,15 @@ async fn forward_claude_oauth(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
     let is_fable = accounts::is_fable_model(Some(route.upstream_model.as_str()));
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    // Committed once, at the account that finally serves a success (ADR-0008).
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -246,6 +279,7 @@ async fn forward_claude_oauth(
             Some(admission) => admission,
             None => continue,
         };
+        session_commit.attempting(account);
         // The per-account refresh_lock serializes only credential refreshes for
         // one account: resolve_claude_account can refresh-on-read and write the
         // token back, and the explicit force_refresh in the RefreshRetry branch
@@ -302,8 +336,8 @@ async fn forward_claude_oauth(
         // variable holds without checking it is a subscription token — so an
         // account pointed at an `sk-ant-api…` key would otherwise have its body
         // rewritten despite facing no client-shape gate.
-        if bearer_is_subscription_oauth(&request_headers) {
-            auto_mode_classifier::restore_claude_code_identity(&mut request_body);
+        if bearer_is_subscription_oauth(&request_headers) && !crate::proxy::is_count_tokens(uri) {
+            auto_mode_classifier::restore_claude_code_identity(&mut request_body, headers);
         }
         let request_body = request_body.into_raw();
 
@@ -327,6 +361,21 @@ async fn forward_claude_oauth(
         let status = upstream.status();
         match accounts::classify(status, upstream.headers()) {
             FailoverAction::Relay => {
+                // An account-level refusal (#817) is the account's fault, not
+                // the request's: cool it and rotate instead of relaying, and
+                // before the healthy mark, which would clear that cooldown.
+                let Some(upstream) = account_refusal::judge_pool_answer(
+                    &state,
+                    &route,
+                    account,
+                    upstream,
+                    bounds,
+                    &mut last_response,
+                )
+                .await?
+                else {
+                    continue;
+                };
                 // A relayed 4xx still clears the cooldown (the account answered)
                 // but only a success grows the storm-control allowance.
                 state.accounts.mark_healthy_scoped(
@@ -338,6 +387,7 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -411,6 +461,20 @@ async fn forward_claude_oauth(
                     last_response = Some(upstream);
                     continue;
                 };
+                // Same refusal rule as the Relay arms: the retry may be the
+                // account-level refusal the throttle was hiding.
+                let Some(retry) = account_refusal::judge_pool_answer(
+                    &state,
+                    &route,
+                    account,
+                    retry,
+                    bounds,
+                    &mut last_response,
+                )
+                .await?
+                else {
+                    continue;
+                };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
                     state
@@ -438,6 +502,7 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, retry, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -612,6 +677,19 @@ async fn forward_claude_oauth(
                 // straight back without a wrongful cooldown.
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
+                        // Same refusal rule as the first attempt's Relay arm.
+                        let Some(retry) = account_refusal::judge_pool_answer(
+                            &state,
+                            &route,
+                            account,
+                            retry,
+                            bounds,
+                            &mut last_response,
+                        )
+                        .await?
+                        else {
+                            continue;
+                        };
                         if retry_status.is_success() {
                             state.accounts.mark_healthy_scoped(
                                 &route.provider,
@@ -633,6 +711,12 @@ async fn forward_claude_oauth(
                         return relay_response(&state, &route, retry, Some(&account.name), bounds)
                             .await
                             .map(|(status, response)| {
+                                session_commit.served(
+                                    &state.accounts,
+                                    &route.provider,
+                                    account,
+                                    status,
+                                );
                                 (
                                     status,
                                     hold_admission_on_success(status, response, admission),
@@ -704,7 +788,15 @@ async fn forward_claude_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None, bounds).await;
+        // A pool whose last account refused relays that refusal and marks it,
+        // so the chain advances past this upstream (#817). The body is already
+        // buffered, so this judge does not wait on the network. Each refusal
+        // was logged and cooled where it was seen; the pool as a whole is
+        // skipped until an account can serve again.
+        return relay_judged(&state, &route, response, bounds, |_, _| {
+            account_refusal::skip_refused_pool(&state, &route, &accounts);
+        })
+        .await;
     }
 
     Err(AdapterError {
@@ -794,13 +886,15 @@ async fn forward_kimi_oauth(
     let session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    // Committed once, at the account that finally serves a success (ADR-0008).
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -828,6 +922,7 @@ async fn forward_kimi_oauth(
             Some(admission) => admission,
             None => continue,
         };
+        session_commit.attempting(account);
         // Per-account refresh_lock, held only around the credential resolve
         // (which may refresh-on-read and write the token back) — never across
         // the upstream POST — so concurrent same-account requests are not
@@ -899,6 +994,7 @@ async fn forward_kimi_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -1139,8 +1235,8 @@ async fn relay_response(
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
     // Wrap a third-party upstream's thinking signatures so a later turn routed
     // to Anthropic drops them instead of failing on them (issue #783). `None`
-    // for first-party and `claude_oauth` providers, whose bodies stay
-    // byte-for-byte passthrough. Only a successful JSON (or untyped) body is
+    // for first-party and `claude_oauth` providers, whose bodies are not
+    // wrapped. Only a successful JSON (or untyped) body is
     // read whole to be rewritten: an error body, or one declared as any other
     // type, carries no thinking block, so it keeps streaming through.
     let signing_key = state
@@ -1375,6 +1471,7 @@ fn rewrite_account_uuid(body: Vec<u8>, account_uuid: Option<&str>) -> Vec<u8> {
 /// stripped and replaced with the provider's key in its configured header.
 fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
     let mut out = headers::filtered(headers);
+    headers::strip_browser_context(&mut out);
     crate::response_coding::filter_accept_encoding(&mut out);
     match credential {
         Credential::ApiKey { value, header } => {
@@ -1401,19 +1498,38 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
             }
 
             const OAUTH_BETA: &str = "oauth-2025-04-20";
-            let beta = out
-                .get("anthropic-beta")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default();
-            let has_oauth_beta = beta.split(',').any(|token| token.trim() == OAUTH_BETA);
+            // Read every `anthropic-beta` field line: `headers::filtered` keeps
+            // repeated lines, and a client may spread its betas across several.
+            // Compare bytes rather than `to_str`, which rejects opaque values.
+            let has_oauth_beta = out
+                .get_all("anthropic-beta")
+                .iter()
+                .flat_map(|value| value.as_bytes().split(|&byte| byte == b','))
+                .any(|token| token.trim_ascii() == OAUTH_BETA.as_bytes());
             if !has_oauth_beta {
-                let value = if beta.is_empty() {
-                    OAUTH_BETA.to_string()
-                } else {
-                    format!("{beta},{OAUTH_BETA}")
-                };
-                if let Ok(value) = HeaderValue::from_str(&value) {
+                // `insert` replaces every existing line, so fold the readable
+                // lines into the one value it writes rather than only the first.
+                // An opaque line goes back as its own field line: merged in, it
+                // would hide the whole value from the `to_str`-based
+                // `safeguards::strip_safeguard_betas` that runs next.
+                let mut merged = String::new();
+                let mut opaque = Vec::new();
+                for value in out.get_all("anthropic-beta") {
+                    match value.to_str() {
+                        Ok(line) if !line.trim().is_empty() => {
+                            merged.push_str(line);
+                            merged.push(',');
+                        }
+                        Ok(_) => {}
+                        Err(_) => opaque.push(value.clone()),
+                    }
+                }
+                merged.push_str(OAUTH_BETA);
+                if let Ok(value) = HeaderValue::from_str(&merged) {
                     out.insert("anthropic-beta", value);
+                    for line in opaque {
+                        out.append("anthropic-beta", line);
+                    }
                 }
             }
         }
@@ -1565,6 +1681,7 @@ pub(crate) async fn chain_attempt(
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status,
                 retry_after: None,
+                refused: false,
             };
         }
     };
@@ -1572,8 +1689,8 @@ pub(crate) async fn chain_attempt(
     safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
     thinking_wrap::request_identity_encoding(&mut request_headers, provider);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
-    if oauth_client {
-        auto_mode_classifier::restore_claude_code_identity(&mut body);
+    if oauth_client && !crate::proxy::is_count_tokens(uri) {
+        auto_mode_classifier::restore_claude_code_identity(&mut body, headers);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -1628,10 +1745,10 @@ pub(crate) async fn chain_attempt(
                     StatusCode::BAD_GATEWAY
                 },
                 retry_after: None,
+                refused: false,
             };
         }
     };
-    let upstream = crate::response_coding::normalize(upstream);
     let status = upstream.status();
     if !status.is_success() {
         // The single-route path relays a non-2xx upstream response as the HTTP
@@ -1650,6 +1767,42 @@ pub(crate) async fn chain_attempt(
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .cloned();
+        // The one exception to the deferred read: a 400 or 402 body is peeked
+        // briefly, because an account-level refusal advances although its
+        // status is terminal (#817). An exhausted chain relays the refusal's
+        // own envelope. A body that is no refusal, or that the peek could not
+        // finish, keeps the deferred terminal answer below.
+        let upstream = match account_refusal::peek(upstream).await {
+            Ok((_, Some((refusal, body)))) => {
+                account_refusal::note(state, route, status, refusal);
+                return crate::proxy::chain_stream::Attempt::Failed {
+                    advance: true,
+                    remember: true,
+                    envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(
+                        error_envelope_from_body(status, Some(&body)),
+                    ),
+                    status,
+                    retry_after,
+                    refused: true,
+                };
+            }
+            Ok((upstream, None)) => upstream,
+            // Unreachable without an idle clock; terminal if it ever happens.
+            Err(error) => {
+                return crate::proxy::chain_stream::Attempt::Failed {
+                    advance: false,
+                    remember: true,
+                    envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(
+                        crate::error::error_body_value(*error.response).await,
+                    ),
+                    status,
+                    retry_after,
+                    refused: false,
+                };
+            }
+        };
+        // After the peek, which needs the declared length `normalize` drops.
+        let upstream = crate::response_coding::normalize(upstream);
         let envelope = crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
             mapped_error_envelope(status, upstream),
         ));
@@ -1659,8 +1812,10 @@ pub(crate) async fn chain_attempt(
             envelope,
             status,
             retry_after,
+            refused: false,
         };
     }
+    let upstream = crate::response_coding::normalize(upstream);
     let is_sse = upstream
         .headers()
         .get("content-type")
@@ -1686,6 +1841,7 @@ pub(crate) async fn chain_attempt(
             envelope,
             status: StatusCode::BAD_GATEWAY,
             retry_after: None,
+            refused: false,
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
@@ -1736,20 +1892,20 @@ pub(crate) async fn mapped_error_envelope(
 ) -> serde_json::Value {
     // Budgeted: the terminal error event must not stall on a body the
     // upstream keeps open, and a huge body must not be buffered whole.
-    let Some(bytes) = crate::error::bounded_upstream_text(
+    let bytes = crate::error::bounded_upstream_text(
         upstream,
         crate::error::ERROR_ENVELOPE_BUDGET,
         crate::error::ERROR_ENVELOPE_BYTES,
     )
-    .await
-    else {
-        return serde_json::json!({
-            "type": "error",
-            "error": {"type": "api_error", "message": format!("upstream returned {status}")}
-        });
-    };
-    serde_json::from_slice::<serde_json::Value>(bytes.as_bytes())
-        .ok()
+    .await;
+    error_envelope_from_body(status, bytes.as_deref().map(str::as_bytes))
+}
+
+/// [`mapped_error_envelope`]'s shape rule on a body already read: `body` when
+/// it parses to the Anthropic error envelope, else the generic `api_error`
+/// naming `status` (also for `None`, a body that could not be read).
+fn error_envelope_from_body(status: StatusCode, body: Option<&[u8]>) -> serde_json::Value {
+    body.and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
         .filter(|value| {
             value.get("type").and_then(serde_json::Value::as_str) == Some("error")
                 && value.get("error").is_some_and(serde_json::Value::is_object)
@@ -1767,10 +1923,14 @@ pub(crate) async fn mapped_error_envelope(
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+mod binding_tests;
+
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use axum::{
         body::Body,
-        http::{HeaderMap, StatusCode},
+        http::{HeaderMap, HeaderValue, StatusCode},
     };
 
     use crate::{accounts::CooldownScope, config::ApiKeyHeader};
@@ -2276,6 +2436,118 @@ mod tests {
         );
     }
 
+    fn beta_lines(headers: &HeaderMap) -> Vec<&str> {
+        headers
+            .get_all("anthropic-beta")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn claude_oauth_keeps_every_beta_line_when_adding_the_oauth_beta() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append("anthropic-beta", "feature-b,feature-c".parse().unwrap());
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_lines(&out),
+            ["feature-a,feature-b,feature-c,oauth-2025-04-20"]
+        );
+    }
+
+    #[test]
+    fn claude_oauth_leaves_beta_lines_alone_when_a_later_line_has_the_oauth_beta() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append(
+            "anthropic-beta",
+            "oauth-2025-04-20,feature-b".parse().unwrap(),
+        );
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_lines(&out),
+            ["feature-a", "oauth-2025-04-20,feature-b"]
+        );
+    }
+
+    #[test]
+    fn claude_oauth_reads_opaque_beta_lines_as_bytes() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        // A non-ASCII line that already carries the OAuth beta: left alone.
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append(
+            "anthropic-beta",
+            HeaderValue::from_bytes(b"\xff,oauth-2025-04-20").unwrap(),
+        );
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_bytes(&out),
+            [&b"feature-a"[..], &b"\xff,oauth-2025-04-20"[..]]
+        );
+
+        // A non-ASCII line without it: kept byte for byte, as its own line
+        // after the merged readable ones.
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append("anthropic-beta", HeaderValue::from_bytes(b"\xff").unwrap());
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_bytes(&out),
+            [&b"feature-a,oauth-2025-04-20"[..], &b"\xff"[..]]
+        );
+    }
+
+    fn beta_bytes(headers: &HeaderMap) -> Vec<&[u8]> {
+        headers
+            .get_all("anthropic-beta")
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect()
+    }
+
+    /// The merge must leave the readable betas readable for the safeguard
+    /// strip that runs right after it on a non-first-party host: an opaque line
+    /// beside a `dangerous-tool-use-*` beta must not shield that beta.
+    #[test]
+    fn claude_oauth_merge_keeps_safeguard_betas_strippable_next_to_an_opaque_line() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        let mut headers = client_headers();
+        headers.append(
+            "anthropic-beta",
+            "dangerous-tool-use-2026-09-03,feature-a".parse().unwrap(),
+        );
+        headers.append("anthropic-beta", HeaderValue::from_bytes(b"\xff").unwrap());
+        let mut out = outbound_headers(&headers, &credential);
+        super::safeguards::strip_safeguard_betas(&mut out, "http://127.0.0.1:9");
+        let readable = out
+            .get_all("anthropic-beta")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            !readable.contains("dangerous-tool-use-"),
+            "the safeguard beta must be stripped, got {readable:?}"
+        );
+        assert!(readable.contains("feature-a") && readable.contains("oauth-2025-04-20"));
+    }
+
     #[test]
     fn kimi_oauth_sets_bearer_strips_client_auth_and_adds_msh_headers() {
         let mut headers = client_headers();
@@ -2541,6 +2813,111 @@ mod tests {
             "the envelope maps the 400, got {resolved:?}"
         );
         std::env::remove_var("SHUNT_CHAIN_STALLED_400_KEY");
+    }
+
+    /// Run one committed-chain attempt against a mock answering `status` with
+    /// `body`, on an `api_key` provider so no client credential is needed.
+    /// Also hands back the state the attempt ran on, for a test that reads
+    /// what the attempt recorded there.
+    async fn chain_attempt_answered_with_state(
+        status: u16,
+        body: &'static str,
+    ) -> (crate::proxy::chain_stream::Attempt, super::AppState) {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _env_lock = crate::config::test_env_lock();
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).set_body_raw(body, "application/json"))
+            .mount(&upstream)
+            .await;
+        let mut config = crate::config::Config::default();
+        let anthropic = config
+            .providers
+            .get_mut("anthropic")
+            .expect("built-in anthropic provider");
+        anthropic.auth = crate::config::AuthMode::ApiKey;
+        anthropic.api_key_env = Some("SHUNT_CHAIN_REFUSAL_KEY".to_string());
+        anthropic.base_url = upstream.uri();
+        std::env::set_var("SHUNT_CHAIN_REFUSAL_KEY", "refusal-probe");
+        let state = super::AppState::new(config, reqwest::Client::new()).unwrap();
+        let route = super::Route {
+            provider: "anthropic".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+        let request = crate::request::RequestBody::parse(
+            b"{\"model\":\"claude-test\",\"max_tokens\":16,\"messages\":[]}".to_vec(),
+        )
+        .unwrap();
+        let attempt = super::chain_attempt(&state, &route, &uri, &client_headers(), request).await;
+        std::env::remove_var("SHUNT_CHAIN_REFUSAL_KEY");
+        (attempt, state)
+    }
+
+    const SPEND_LIMIT_400: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}"#;
+    const BILLING_402: &str =
+        r#"{"type":"error","error":{"type":"billing_error","message":"Payment required."}}"#;
+
+    /// A refusal on the committed streaming chain advances although its status
+    /// is terminal, and carries the upstream's own envelope for an exhausted
+    /// chain to relay (#817).
+    #[tokio::test]
+    async fn chain_attempt_advances_on_an_account_refusal() {
+        for (status, body) in [(400, SPEND_LIMIT_400), (402, BILLING_402)] {
+            match chain_attempt_answered_with_state(status, body).await.0 {
+                crate::proxy::chain_stream::Attempt::Failed {
+                    advance,
+                    remember,
+                    envelope,
+                    status: failed,
+                    ..
+                } => {
+                    assert!(advance, "a {status} refusal advances");
+                    assert!(remember, "a relayed refusal is remembered");
+                    assert_eq!(failed.as_u16(), status);
+                    let expected: serde_json::Value = serde_json::from_str(body).unwrap();
+                    assert_eq!(envelope.resolve().await, expected, "status {status}");
+                }
+                _ => panic!("expected a failed attempt, got a winner"),
+            }
+        }
+    }
+
+    /// A refusal on the committed chain starts the `api_key` upstream's skip
+    /// window where it is classified, as the ordered chain's does (#817).
+    #[tokio::test]
+    async fn chain_attempt_skips_an_api_key_upstream_that_refused() {
+        let (_, state) = chain_attempt_answered_with_state(400, SPEND_LIMIT_400).await;
+        assert!(state.accounts.upstream_skips().is_skipped("anthropic"));
+    }
+
+    /// The positive twin: a validation 400 is read but stays terminal, with
+    /// the upstream's envelope still deferred to the terminal event.
+    #[tokio::test]
+    async fn chain_attempt_keeps_a_validation_400_terminal() {
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}"#;
+        match chain_attempt_answered_with_state(400, body).await.0 {
+            crate::proxy::chain_stream::Attempt::Failed {
+                advance,
+                remember,
+                envelope,
+                status,
+                ..
+            } => {
+                assert!(!advance, "a validation 400 is terminal");
+                assert!(remember);
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                let expected: serde_json::Value = serde_json::from_str(body).unwrap();
+                assert_eq!(envelope.resolve().await, expected);
+            }
+            _ => panic!("expected a failed attempt, got a winner"),
+        }
     }
 
     /// An alias route's non-streaming `200` whose body breaks after its headers

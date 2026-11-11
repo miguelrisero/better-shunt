@@ -28,6 +28,7 @@ use wiremock::{
 };
 
 mod common;
+use common::{error_envelope, CREDIT_BALANCE_MESSAGE, SPEND_LIMIT_MESSAGE};
 
 const CLIENT_MODEL: &str = "failover-model";
 
@@ -988,6 +989,7 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
+        ..Default::default()
     });
     let gateway = start_gateway(config).await;
 
@@ -1241,4 +1243,500 @@ async fn legacy_single_element_chain_adds_gateway_headers() {
     assert_gateway_headers(&response, "anthropic", "legacy-model");
     assert_eq!(response.text().await.unwrap(), "legacy");
     upstream.verify().await;
+}
+
+/// An Anthropic account-refusal reply: `status` with an error envelope.
+fn refusal_reply(status: u16, error_type: &str, message: &str) -> ResponseTemplate {
+    ResponseTemplate::new(status)
+        .set_body_raw(error_envelope(error_type, message), "application/json")
+}
+
+/// The org spend-limit refusal the skip tests answer with.
+fn spend_limit_reply() -> ResponseTemplate {
+    refusal_reply(400, "invalid_request_error", SPEND_LIMIT_MESSAGE)
+}
+
+/// Mount a POST responder on `server` that must be hit exactly `times`.
+async fn mount_post(server: &MockServer, responder: impl wiremock::Respond + 'static, times: u64) {
+    Mock::given(method("POST"))
+        .respond_with(responder)
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+/// A two-upstream chain, `first` then `second`, mapped to `model-a` / `model-b`.
+fn two_upstream_chain(first: UpstreamConfig, second: UpstreamConfig) -> Config {
+    let (first_name, second_name) = (first.name.clone(), second.name.clone());
+    chain_config(
+        vec![first, second],
+        &[(&first_name, "model-a"), (&second_name, "model-b")],
+    )
+}
+
+/// An upstream that answers `status` with a JSON content type, sends a few
+/// bytes of a body it declares much longer, and then holds the connection
+/// open without ever finishing it: any read of that body waits until the
+/// reader's own budget gives up.
+/// Also returns a counter of the connections it has accepted, so a test can
+/// prove the upstream was contacted.
+async fn spawn_stalled_error_upstream(status: u16) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let accepted = hits.clone();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        accepted.fetch_add(1, Ordering::SeqCst);
+        let mut request = [0_u8; 8192];
+        let _ = socket.read(&mut request).await;
+        let head = format!(
+            "HTTP/1.1 {status} Upstream\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n{{\"type\":"
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        drop(socket);
+    });
+    (format!("http://{addr}"), hits)
+}
+
+#[tokio::test]
+async fn account_refusals_advance_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    for (status, error_type, message) in [
+        (400, "invalid_request_error", SPEND_LIMIT_MESSAGE),
+        (400, "invalid_request_error", CREDIT_BALANCE_MESSAGE),
+        (402, "billing_error", "Your account has a billing issue."),
+    ] {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        mount_post(&first, refusal_reply(status, error_type, message), 1).await;
+        mount_post(
+            &second,
+            ResponseTemplate::new(200).set_body_string("healthy"),
+            1,
+        )
+        .await;
+        let config = two_upstream_chain(
+            passthrough("first", first.uri()),
+            passthrough("second", second.uri()),
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = post(&gateway).await;
+
+        assert_eq!(response.status(), StatusCode::OK, "{status} {message}");
+        assert_gateway_headers(&response, "second", "model-b");
+        assert_eq!(response.text().await.unwrap(), "healthy");
+        first.verify().await;
+        second.verify().await;
+    }
+}
+
+/// A refusal whose body the upstream compressed is judged on the decoded
+/// envelope, so it advances like an uncompressed one.
+#[tokio::test]
+async fn a_compressed_account_refusal_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    let body = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    mount_post(
+        &first,
+        ResponseTemplate::new(400)
+            .insert_header("content-encoding", "gzip")
+            .set_body_raw(common::gzip(body.as_bytes()), "application/json"),
+        1,
+    )
+    .await;
+    mount_post(
+        &second,
+        ResponseTemplate::new(200).set_body_string("healthy"),
+        1,
+    )
+    .await;
+    let config = two_upstream_chain(
+        passthrough("first", first.uri()),
+        passthrough("second", second.uri()),
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "second", "model-b");
+    assert_eq!(response.text().await.unwrap(), "healthy");
+    first.verify().await;
+    second.verify().await;
+}
+
+#[tokio::test]
+async fn request_level_400_with_an_error_envelope_returns_immediately() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    for message in [
+        "messages: Field required",
+        // Mentions the phrase but does not start with it: not a refusal.
+        "max_tokens exceeds the usage limits of this model",
+    ] {
+        let body = error_envelope("invalid_request_error", message);
+        let bad = MockServer::start().await;
+        let skipped = MockServer::start().await;
+        mount_post(
+            &bad,
+            ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"),
+            1,
+        )
+        .await;
+        mount_post(&skipped, ResponseTemplate::new(200), 0).await;
+        let config = two_upstream_chain(
+            passthrough("bad", bad.uri()),
+            passthrough("skipped", skipped.uri()),
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = post(&gateway).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{message}");
+        assert_gateway_headers(&response, "bad", "model-a");
+        assert_eq!(response.text().await.unwrap(), body);
+        bad.verify().await;
+        skipped.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn single_upstream_refusal_relays_the_upstream_status_and_message() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    let body = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    let only = MockServer::start().await;
+    mount_post(
+        &only,
+        ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"),
+        1,
+    )
+    .await;
+    let config = chain_config(
+        vec![passthrough("only", only.uri())],
+        &[("only", "model-a")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_gateway_headers(&response, "only", "model-a");
+    assert_eq!(response.text().await.unwrap(), body);
+    only.verify().await;
+}
+
+#[tokio::test]
+async fn exhausted_refusal_chain_relays_the_refusal_unless_a_failure_outranks_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    let spend = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    let credit = error_envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE);
+    // Both refuse: the first refusal is relayed, after the second was tried.
+    // A refusal then a 429: the 429 outranks it, as for any terminal status.
+    for (second_status, second_body, expected_status, expected_body, expected_upstream) in [
+        (402, credit.as_str(), 400, spend.as_str(), "first"),
+        (429, "second-429", 429, "second-429", "second"),
+    ] {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        mount_post(
+            &first,
+            ResponseTemplate::new(400).set_body_raw(spend.clone(), "application/json"),
+            1,
+        )
+        .await;
+        mount_post(
+            &second,
+            ResponseTemplate::new(second_status)
+                .set_body_raw(second_body.to_string(), "application/json"),
+            1,
+        )
+        .await;
+        let config = two_upstream_chain(
+            passthrough("first", first.uri()),
+            passthrough("second", second.uri()),
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = post(&gateway).await;
+
+        assert_eq!(response.status().as_u16(), expected_status);
+        let expected_model = if expected_upstream == "first" {
+            "model-a"
+        } else {
+            "model-b"
+        };
+        assert_gateway_headers(&response, expected_upstream, expected_model);
+        assert_eq!(response.text().await.unwrap(), expected_body);
+        first.verify().await;
+        second.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_and_server_error_advance_without_reading_the_body() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    // The routes keep the client's model id, so the relay leaves a non-SSE
+    // body lazy instead of reading it whole for the alias rewrite. Reading
+    // the stalled body here would hold the decision until the 5 s error
+    // envelope budget, well past the bound below.
+    for status in [429, 503] {
+        let (stalled, stalled_hits) = spawn_stalled_error_upstream(status).await;
+        let healthy = MockServer::start().await;
+        mount_post(
+            &healthy,
+            ResponseTemplate::new(200).set_body_string("healthy"),
+            1,
+        )
+        .await;
+        let config = chain_config(
+            vec![
+                passthrough("stalled", stalled),
+                passthrough("healthy", healthy.uri()),
+            ],
+            &[("stalled", CLIENT_MODEL), ("healthy", CLIENT_MODEL)],
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), post(&gateway))
+            .await
+            .unwrap_or_else(|_| panic!("a {status} advance waited on its body"));
+
+        assert_eq!(response.status(), StatusCode::OK, "status {status}");
+        assert_gateway_headers(&response, "healthy", CLIENT_MODEL);
+        assert_eq!(response.text().await.unwrap(), "healthy");
+        assert_eq!(
+            stalled_hits.load(Ordering::SeqCst),
+            1,
+            "the stalled upstream was contacted once for {status}"
+        );
+        healthy.verify().await;
+    }
+}
+
+/// An Anthropic upstream that injects the key held in `key_env`, so a refusal
+/// it answers is the gateway's own credential and starts a skip window.
+fn api_key_upstream(name: &str, base_url: String, key_env: &str) -> UpstreamConfig {
+    upstream(
+        name,
+        base_url,
+        ProviderKind::Anthropic,
+        UpstreamAuth::Map(AuthMap::ApiKey {
+            env: Some(key_env.to_string()),
+            header: Some(ApiKeyHeader::XApiKey),
+        }),
+    )
+}
+
+/// A responder that notes which upstream answered, in arrival order, before
+/// answering with `template`.
+struct Noting {
+    name: &'static str,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    template: ResponseTemplate,
+}
+
+impl wiremock::Respond for Noting {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        self.log.lock().unwrap().push(self.name);
+        self.template.clone()
+    }
+}
+
+#[tokio::test]
+async fn a_spend_limit_refusal_skips_the_api_key_upstream_on_later_requests() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let key_env = format!("SHUNT_REFUSAL_SKIP_KEY_{}", std::process::id());
+    let mut vars = common::env_lock().await;
+    vars.set(&key_env, "upstream-key");
+    let refusing = MockServer::start().await;
+    let healthy = MockServer::start().await;
+    // Contacted once: the second request must skip it without a round trip.
+    mount_post(&refusing, spend_limit_reply(), 1).await;
+    mount_post(
+        &healthy,
+        ResponseTemplate::new(200).set_body_string("healthy"),
+        2,
+    )
+    .await;
+    let config = two_upstream_chain(
+        api_key_upstream("refusing", refusing.uri(), &key_env),
+        api_key_upstream("healthy", healthy.uri(), &key_env),
+    );
+    let gateway = start_gateway(config).await;
+
+    for attempt in ["refused then advanced", "skipped"] {
+        let response = post(&gateway).await;
+        assert_eq!(response.status(), StatusCode::OK, "{attempt}");
+        assert_gateway_headers(&response, "healthy", "model-b");
+        assert_eq!(response.text().await.unwrap(), "healthy", "{attempt}");
+    }
+    refusing.verify().await;
+    healthy.verify().await;
+}
+
+#[tokio::test]
+async fn a_refusing_passthrough_upstream_is_never_skipped() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    let refusing = MockServer::start().await;
+    let healthy = MockServer::start().await;
+    // Contacted by both requests: the caller's own credential is not skipped.
+    mount_post(&refusing, spend_limit_reply(), 2).await;
+    mount_post(
+        &healthy,
+        ResponseTemplate::new(200).set_body_string("healthy"),
+        2,
+    )
+    .await;
+    let config = two_upstream_chain(
+        passthrough("refusing", refusing.uri()),
+        passthrough("healthy", healthy.uri()),
+    );
+    let gateway = start_gateway(config).await;
+
+    for _ in 0..2 {
+        let response = post(&gateway).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_gateway_headers(&response, "healthy", "model-b");
+    }
+    refusing.verify().await;
+    healthy.verify().await;
+}
+
+#[tokio::test]
+async fn a_chain_whose_every_upstream_is_skipped_is_still_tried_in_order() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let key_env = format!("SHUNT_REFUSAL_ALL_SKIPPED_KEY_{}", std::process::id());
+    let mut vars = common::env_lock().await;
+    vars.set(&key_env, "upstream-key");
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_post(
+        &first,
+        Noting {
+            name: "first",
+            log: log.clone(),
+            template: spend_limit_reply(),
+        },
+        2,
+    )
+    .await;
+    mount_post(
+        &second,
+        Noting {
+            name: "second",
+            log: log.clone(),
+            template: refusal_reply(402, "billing_error", "Your account has a billing issue."),
+        },
+        2,
+    )
+    .await;
+    let config = two_upstream_chain(
+        api_key_upstream("first", first.uri(), &key_env),
+        api_key_upstream("second", second.uri(), &key_env),
+    );
+    let gateway = start_gateway(config).await;
+
+    for attempt in ["both refuse", "both skipped"] {
+        let response = post(&gateway).await;
+        // The exhausted chain relays the first refusal, as it does unskipped.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{attempt}");
+        assert_gateway_headers(&response, "first", "model-a");
+    }
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["first", "second", "first", "second"],
+        "every skipped chain falls back to the configured order"
+    );
+    first.verify().await;
+    second.verify().await;
+}
+
+/// A Claude pool whose every account refuses relays the last refusal marked,
+/// so the chain advances past the pool (#817 FR-7), and the pool is skipped
+/// until an account can serve again: a later request goes straight to the
+/// fallback instead of re-contacting every cooling account (FR-6).
+#[tokio::test]
+async fn a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_FAILOVER_REFUSING_A", "fake-oauth-refusing-a");
+    vars.set("SHUNT_TEST_FAILOVER_REFUSING_B", "fake-oauth-refusing-b");
+    let claude = MockServer::start().await;
+    // One refusal per account, on the first request only.
+    mount_post(&claude, spend_limit_reply(), 2).await;
+    let fallback = MockServer::start().await;
+    mount_post(
+        &fallback,
+        ResponseTemplate::new(200).set_body_string("from-fallback"),
+        2,
+    )
+    .await;
+    let pool = ["a", "b"]
+        .map(|name| {
+            shunt::config::AccountSelection::Inline(shunt::config::AccountConfig {
+                name: format!("refusing-{name}"),
+                token_env: Some(format!(
+                    "SHUNT_TEST_FAILOVER_REFUSING_{}",
+                    name.to_uppercase()
+                )),
+                uuid: Some(format!("uuid-refusing-{name}")),
+                ..Default::default()
+            })
+        })
+        .to_vec();
+    let config = two_upstream_chain(
+        upstream(
+            "claude",
+            claude.uri(),
+            ProviderKind::Anthropic,
+            UpstreamAuth::Map(AuthMap::ClaudeOauth {
+                account: None,
+                accounts: Some(pool),
+            }),
+        ),
+        passthrough("fallback", fallback.uri()),
+    );
+    let gateway = start_gateway(config).await;
+
+    for _ in 0..2 {
+        let response = post(&gateway).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_gateway_headers(&response, "fallback", "model-b");
+        assert_eq!(response.text().await.unwrap(), "from-fallback");
+    }
+    claude.verify().await;
+    fallback.verify().await;
 }
