@@ -76,7 +76,7 @@ and is configured to route the model ids above to the Codex provider:
 > The latest are `gpt-6-astra` / `gpt-6.1-sol` / `gpt-6-luna` / `gpt-6.1-terra`, followed by
 > `gpt-5.6-terra`; older accounts may only have
 > `gpt-5.5` / `gpt-5.4`. `gpt-6.1-sol` requires a Codex client of
-> at least 0.153.0 and `gpt-6-luna` at least 0.155.0; shunt's pinned client identity (`codex_cli_rs/0.167.1`)
+> at least 0.153.0 and `gpt-6-luna` at least 0.155.0; shunt's pinned client identity (`codex_cli_rs/0.169.0`)
 > satisfies that. The canonical catalog is
 > openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 
