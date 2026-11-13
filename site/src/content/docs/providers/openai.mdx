@@ -141,3 +141,11 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 Confirm the response's `x-gateway-upstream` header names `openai`, then
 [point Claude Code at shunt](/guides/connect-claude-code/).
+
+## Inline PDF tool results
+
+Base64 documents retain their title as the Responses filename. If the title is
+missing or blank, shunt supplies `document.pdf` for PDFs (`document` for other
+inline files). This also applies inside tool results and prevents the Codex
+backend rejecting an untitled PDF as a missing output parameter. URL documents
+keep their original URL.

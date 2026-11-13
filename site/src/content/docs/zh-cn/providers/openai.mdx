@@ -137,3 +137,9 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 确认响应的 `x-gateway-upstream` 头写的是 `openai`,然后
 [将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。
+
+## 内联 PDF 工具结果
+
+Base64 文档的标题会保留为 Responses 文件名。如果标题缺失或为空，shunt 会为
+PDF 提供 `document.pdf`，为其他内联文件提供 `document`。工具结果同样适用，
+可避免 Codex 后端因无标题 PDF 而报告缺少输出参数。URL 文档保留原始 URL。

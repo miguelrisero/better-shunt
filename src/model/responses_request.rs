@@ -553,11 +553,23 @@ fn file_content_item(block: &Value) -> Option<Value> {
                 .get("media_type")
                 .and_then(Value::as_str)
                 .unwrap_or("application/pdf");
-            json!({"type": "input_file", "file_data": format!("data:{media_type};base64,{data}")})
+            // Inline files require a filename even when Anthropic supplies no
+            // title (common for PDF tool results). Without it, Codex rejects
+            // the whole output item as a missing required parameter.
+            let filename = if media_type == "application/pdf" {
+                "document.pdf"
+            } else {
+                "document"
+            };
+            json!({"type": "input_file", "file_data": format!("data:{media_type};base64,{data}"), "filename": filename})
         }
         _ => return None,
     };
-    if let Some(filename) = block.get("title").and_then(Value::as_str) {
+    if let Some(filename) = block
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+    {
         item["filename"] = json!(filename);
     }
     Some(item)
