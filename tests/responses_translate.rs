@@ -3570,6 +3570,47 @@ fn document_block_becomes_input_file() {
 }
 
 #[test]
+fn untitled_pdf_tool_result_has_a_filename() {
+    for title in [Value::Null, json!(""), json!("   "), json!("report.pdf")] {
+        let out = translate(json!({
+            "messages": [{"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_pdf", "content": [
+                    {"type": "text", "text": "Attached report"},
+                    {"type": "document", "title": title, "source": {
+                        "type": "base64", "media_type": "application/pdf", "data": "PDF"
+                    }}
+                ]}
+            ]}]
+        }));
+        let expected_name = if title == json!("report.pdf") {
+            "report.pdf"
+        } else {
+            "document.pdf"
+        };
+        assert_eq!(
+            out["input"][0]["output"],
+            json!([
+                {"type": "input_text", "text": "Attached report"},
+                {"type": "input_file", "file_data": "data:application/pdf;base64,PDF", "filename": expected_name}
+            ])
+        );
+    }
+}
+
+#[test]
+fn inline_document_without_title_or_media_type_has_pdf_filename() {
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "document", "source": {"data": "PDF"}}
+        ]}]
+    }));
+    assert_eq!(
+        out["input"][0]["content"][0],
+        json!({"type": "input_file", "file_data": "data:application/pdf;base64,PDF", "filename": "document.pdf"})
+    );
+}
+
+#[test]
 fn url_sourced_document_uses_file_url_not_empty_data() {
     let out = translate(json!({
         "messages": [{"role": "user", "content": [

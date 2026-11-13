@@ -145,3 +145,11 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 
 レスポンスの `x-gateway-upstream` ヘッダーが `openai` を示すことを確認したら、
 [Claude Code を shunt へ向け](/ja/guides/connect-claude-code/)てください。
+
+## インライン PDF のツール結果
+
+Base64 ドキュメントのタイトルは Responses のファイル名として保持されます。
+タイトルがない場合や空白の場合、shunt は PDF に `document.pdf`、その他の
+インラインファイルに `document` を指定します。ツール結果にも適用され、
+無題の PDF による Codex バックエンドの出力パラメーター不足エラーを防ぎます。
+URL ドキュメントは元の URL を保持します。

@@ -58,7 +58,7 @@ message coalesce into a single `message` item; tool blocks flush the pending mes
 | `text` | `{ type:"message", role, content:[{ type, text }] }` | `type` = `output_text` when role=assistant, else `input_text`. Trim empties. |
 | `image` `{source:{media_type,data}}` | `{ type:"input_image", image_url:"data:<mt>;base64,<data>" }` (a message content part) | base64 data URL. |
 | `tool_use` `{id,name,input}` | `{ type:"function_call", call_id:id, name, arguments: JSON.stringify(input) }` | **`call_id` = the Anthropic `tool_use.id`** — the join key. |
-| `tool_result` `{tool_use_id,content,is_error}` | `{ type:"function_call_output", call_id:tool_use_id, output }` | `output` = string content, or flattened text of block content; `is_error` with no content → `"Tool execution failed"`. |
+| `tool_result` `{tool_use_id,content,is_error}` | `{ type:"function_call_output", call_id:tool_use_id, output }` | `output` is a string for text-only content, or a content array for mixed text/images/documents; `is_error` retains a failure signal. |
 
 `call_id` fidelity is critical — it links `tool_use` ↔ `tool_result` across turns. Never
 regenerate it.
@@ -311,3 +311,13 @@ negligible for the short completions stop sequences are used for.
 - Error mapping table.
 - Live smoke (opt-in): real `OPENAI_API_KEY` end-to-end from Claude Code.
 ```
+
+### Inline document filenames
+
+Responses `input_file` entries containing base64 `file_data` always carry a
+filename, including inside mixed `function_call_output.output` arrays. Preserve
+a nonblank Anthropic document title; otherwise use `document.pdf` for PDFs
+(including the default media type), or `document` for other inline files. URL
+sources retain `file_url` and do not acquire a synthetic filename. This avoids
+Codex rejecting an untitled PDF tool result with `Missing required parameter:
+input[N].output[M]`. File bytes and adjacent text remain unchanged.
